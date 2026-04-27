@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.6.2
+ * Reading Heatmap - Main Plugin Script v0.6.3
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -27,13 +27,37 @@ class StorageManager {
   constructor() {
     this.data = null;
     this.filePath = null;
+    this.dataDir = null;
     this.saveTimer = null;
     this.dirty = false;
     this.FILENAME = "zotero-reading-heatmap.json";
+    this.SUBFOLDER = "reading-heatmap";
   }
 
   async init() {
-    this.filePath = PathUtils.join(Zotero.DataDirectory.dir, this.FILENAME);
+    // Create dedicated subfolder under Zotero data directory
+    this.dataDir = PathUtils.join(Zotero.DataDirectory.dir, this.SUBFOLDER);
+    if (!(await IOUtils.exists(this.dataDir))) {
+      await IOUtils.makeDirectory(this.dataDir, { ignoreExisting: true });
+    }
+    this.filePath = PathUtils.join(this.dataDir, this.FILENAME);
+
+    // Auto-migrate: if old file exists in Zotero root, move it to the new subfolder
+    var oldPath = PathUtils.join(Zotero.DataDirectory.dir, this.FILENAME);
+    if (!(await IOUtils.exists(this.filePath)) && (await IOUtils.exists(oldPath))) {
+      try {
+        await IOUtils.move(oldPath, this.filePath);
+        Zotero.debug("[ReadingHeatmap:Storage] Migrated data from " + oldPath + " to " + this.filePath);
+      } catch (e) {
+        Zotero.debug("[ReadingHeatmap:Storage] Migration failed, will copy instead: " + e);
+        try {
+          await IOUtils.copy(oldPath, this.filePath);
+        } catch (e2) {
+          Zotero.debug("[ReadingHeatmap:Storage] Copy also failed: " + e2);
+        }
+      }
+    }
+
     await this._load();
     this.syncProfileFromPrefs();
     Zotero.debug("[ReadingHeatmap:Storage] Initialized at " + this.filePath);
@@ -2586,7 +2610,7 @@ Zotero.ReadingHeatmap = {
         csv += date + "," + data.totalSeconds + "," + Math.round(data.totalSeconds / 60) + "," + itemsCount + "\n";
       }
 
-      var path = PathUtils.join(Zotero.DataDirectory.dir, "reading-heatmap-export.csv");
+      var path = PathUtils.join(this.storage.dataDir, "reading-heatmap-export.csv");
       await IOUtils.writeUTF8(path, "\ufeff" + csv);
       this._showMessage("CSV exported to: " + path);
     } catch (e) {
@@ -2602,7 +2626,7 @@ Zotero.ReadingHeatmap = {
         dailyStats: this.storage.data.dailyStats,
         groups: this.storage.data.groups,
       };
-      var path = PathUtils.join(Zotero.DataDirectory.dir, "reading-heatmap-backup.json");
+      var path = PathUtils.join(this.storage.dataDir, "reading-heatmap-backup.json");
       await IOUtils.writeUTF8(path, JSON.stringify(data, null, 2));
       this._showMessage("JSON exported to: " + path);
     } catch (e) {
