@@ -97,6 +97,13 @@ The main plugin script (`reading-heatmap.js`) is organized into six sections:
 
 ## Changelog
 
+### v0.6.2
+
+- User color (userColor) now syncs to the server: each member's personalized color is uploaded during device registration and returned in group data downloads
+- Group view now displays other members' actual personalized colors instead of preset palette colors
+- Server updated to v1.1.0: `devices` table gains `userColor` column with automatic migration for existing databases
+- Included `update_server.sh` one-click server update script in `heatmap-server/`
+
 ### v0.6.1
 
 - Added Combined/Overlay toggle in group view: switch between aggregated single-color heatmap and multi-color stripe overlay where each day cell shows per-member colored stripes

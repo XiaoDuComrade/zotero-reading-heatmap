@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.6.1
+ * Reading Heatmap - Main Plugin Script v0.6.2
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -646,6 +646,7 @@ class SyncManager {
       await this._post("/api/register", {
         deviceId: this.storage.getDeviceId(),
         userName: this.storage.getUserName(),
+        userColor: this.storage.getUserColor(),
       });
     } catch (e) {
       Zotero.debug("[ReadingHeatmap:Sync] Register error: " + e);
@@ -767,6 +768,7 @@ class SyncManager {
 
       result.members[deviceId] = {
         userName: memberData.userName || "Anonymous",
+        userColor: memberData.userColor || null,
         stats: memberStats,
       };
     }
@@ -808,6 +810,7 @@ class SyncManager {
 
       result.members[deviceId] = {
         userName: memberData.userName || "Anonymous",
+        userColor: memberData.userColor || null,
         stats: memberStats,
       };
     }
@@ -2311,10 +2314,19 @@ Zotero.ReadingHeatmap = {
     for (var deviceId in groupData.members) {
       var member = groupData.members[deviceId];
       var isMe = (deviceId === myDeviceId);
+      // Priority: for self use local userColor; for others use server-synced userColor; fallback to preset palette
+      var memberColor;
+      if (isMe) {
+        memberColor = myColor;
+      } else if (groupData.members[deviceId].userColor && /^#[0-9A-Fa-f]{6}$/.test(groupData.members[deviceId].userColor)) {
+        memberColor = groupData.members[deviceId].userColor;
+      } else {
+        memberColor = colorKeys[colorIndex % colorKeys.length];
+      }
       memberList.push({
         deviceId: deviceId,
         userName: member.userName,
-        colorScheme: isMe ? myColor : colorKeys[colorIndex % colorKeys.length],
+        colorScheme: memberColor,
         isMe: isMe,
       });
       if (!isMe) colorIndex++;
