@@ -773,18 +773,51 @@ class HeatmapRenderer {
   }
 
   /**
+   * Generate a 5-level color scale from a single hex color.
+   * Level 0 is always the empty/background color (#ebedf0).
+   * Levels 1-4 are progressively more saturated/darker shades.
+   */
+  generateColorScale(hexColor) {
+    if (!hexColor || !/^#[0-9A-Fa-f]{6}$/.test(hexColor)) {
+      return this.COLOR_SCALES.personal;
+    }
+    var r = parseInt(hexColor.slice(1, 3), 16);
+    var g = parseInt(hexColor.slice(3, 5), 16);
+    var b = parseInt(hexColor.slice(5, 7), 16);
+
+    // Generate 4 levels by mixing with white (light) to full color (dark)
+    var levels = ["#ebedf0"];
+    var opacities = [0.25, 0.50, 0.75, 1.0];
+    for (var i = 0; i < opacities.length; i++) {
+      var op = opacities[i];
+      var mr = Math.round(255 + (r - 255) * op);
+      var mg = Math.round(255 + (g - 255) * op);
+      var mb = Math.round(255 + (b - 255) * op);
+      levels.push("#" + ((1 << 24) + (mr << 16) + (mg << 8) + mb).toString(16).slice(1));
+    }
+    return levels;
+  }
+
+  /**
    * Build a monthly heatmap using DOM API.
    * @param {Document} doc
    * @param {Object} stats - { dateStr: { totalSeconds, items } }
    * @param {Object} summary - { totalSeconds, activeDays, currentStreak, maxStreak }
    * @param {number} year
    * @param {number} month (1-12)
-   * @param {string} colorScheme - key in COLOR_SCALES (default "personal")
+   * @param {string|Array} colorScheme - key in COLOR_SCALES, a hex color string, or an array of 5 colors
    * @param {string} [label] - optional label shown above heatmap (e.g. user name)
    */
   buildMonthlyHeatmapDOM(doc, stats, summary, year, month, colorScheme, label) {
     colorScheme = colorScheme || "personal";
-    var colors = this.COLOR_SCALES[colorScheme] || this.COLOR_SCALES.personal;
+    var colors;
+    if (Array.isArray(colorScheme)) {
+      colors = colorScheme;
+    } else if (typeof colorScheme === "string" && /^#[0-9A-Fa-f]{6}$/.test(colorScheme)) {
+      colors = this.generateColorScale(colorScheme);
+    } else {
+      colors = this.COLOR_SCALES[colorScheme] || this.COLOR_SCALES.personal;
+    }
     var fragment = doc.createDocumentFragment();
 
     // --- Optional label ---
@@ -1346,7 +1379,17 @@ Zotero.ReadingHeatmap = {
   _renderPersonalView(doc, body, year, month) {
     var stats = this.storage.getMonthlyStats(year, month);
     var summary = this.storage.getMonthlySummary(year, month);
-    var fragment = this.renderer.buildMonthlyHeatmapDOM(doc, stats, summary, year, month, "personal");
+
+    // Use user's custom color if set
+    var colorScheme = "personal";
+    try {
+      var savedColor = Zotero.Prefs.get("extensions.reading-heatmap.user.color", true) || "";
+      if (savedColor && /^#[0-9A-Fa-f]{6}$/.test(savedColor)) {
+        colorScheme = savedColor;
+      }
+    } catch (e) {}
+
+    var fragment = this.renderer.buildMonthlyHeatmapDOM(doc, stats, summary, year, month, colorScheme);
     body.appendChild(fragment);
   },
 
@@ -1371,23 +1414,26 @@ Zotero.ReadingHeatmap = {
     groupHeader.textContent = "\uD83D\uDC65 " + groupName;
     body.appendChild(groupHeader);
 
-    // Render aggregated heatmap first
-    var aggSummary = this.storage.computeSummaryFromStats(groupData.aggregated, year, month);
-    var aggFragment = this.renderer.buildMonthlyHeatmapDOM(
-      doc, groupData.aggregated, aggSummary, year, month, "personal", "All Members (Combined)"
-    );
-    body.appendChild(aggFragment);
-
-    // Render individual member heatmaps
+    // Render individual member heatmaps only (no aggregated view)
     var colorKeys = ["user1", "user2", "user3"];
     var colorIndex = 0;
     var myDeviceId = this.storage.getDeviceId();
+    var isFirst = true;
+
+    // Get user's custom color from preferences
+    var myColor = "personal";
+    try {
+      var savedColor = Zotero.Prefs.get("extensions.reading-heatmap.user.color", true) || "";
+      if (savedColor && /^#[0-9A-Fa-f]{6}$/.test(savedColor)) {
+        myColor = savedColor;
+      }
+    } catch (e) {}
 
     for (var deviceId in groupData.members) {
       var member = groupData.members[deviceId];
       var isMe = (deviceId === myDeviceId);
       var memberLabel = member.userName + (isMe ? " (You)" : "");
-      var memberColor = isMe ? "personal" : colorKeys[colorIndex % colorKeys.length];
+      var memberColor = isMe ? myColor : colorKeys[colorIndex % colorKeys.length];
       if (!isMe) colorIndex++;
 
       var memberSummary = this.storage.computeSummaryFromStats(member.stats, year, month);
@@ -1395,11 +1441,14 @@ Zotero.ReadingHeatmap = {
         doc, member.stats, memberSummary, year, month, memberColor, memberLabel
       );
 
-      // Add a separator
-      var sep = doc.createElement("hr");
-      sep.style.cssText = "border:none; border-top:1px solid #d0d7de; margin:8px 0;";
-      body.appendChild(sep);
+      if (!isFirst) {
+        // Add a separator between members
+        var sep = doc.createElement("hr");
+        sep.style.cssText = "border:none; border-top:1px solid #d0d7de; margin:8px 0;";
+        body.appendChild(sep);
+      }
       body.appendChild(memberFragment);
+      isFirst = false;
     }
   },
 

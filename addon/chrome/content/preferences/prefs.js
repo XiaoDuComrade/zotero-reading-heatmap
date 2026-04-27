@@ -111,6 +111,9 @@ var ReadingHeatmapPrefs = {
       }
     });
 
+    // Wire up color preview
+    self._initColorPreview(doc);
+
     // Populate group list
     self._refreshGroupList(doc);
 
@@ -151,6 +154,64 @@ var ReadingHeatmapPrefs = {
     btn.addEventListener("click", wrappedHandler);
 
     Zotero.debug("[ReadingHeatmap:Prefs] Bound button: " + buttonId);
+  },
+
+  _initColorPreview: function(doc) {
+    var colorInput = doc.getElementById("pref-user-color");
+    var colorPreview = doc.getElementById("color-preview");
+    if (!colorInput || !colorPreview) return;
+
+    // Load saved color from preference
+    var savedColor = "";
+    try {
+      savedColor = Zotero.Prefs.get("extensions.reading-heatmap.user.color", true) || "";
+    } catch (e) {}
+    if (savedColor && /^#[0-9A-Fa-f]{6}$/.test(savedColor)) {
+      colorInput.value = savedColor;
+      colorPreview.style.background = savedColor;
+    } else {
+      // Use default
+      colorInput.value = "#40c463";
+      colorPreview.style.background = "#40c463";
+    }
+
+    // Update preview on input change
+    colorInput.addEventListener("input", function() {
+      var val = colorInput.value.trim();
+      if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
+        colorPreview.style.background = val;
+        colorPreview.style.borderColor = "#d0d7de";
+        try {
+          Zotero.Prefs.set("extensions.reading-heatmap.user.color", val, true);
+        } catch (e) {}
+      } else if (/^[0-9A-Fa-f]{6}$/.test(val)) {
+        // Auto-prepend # if user typed 6 hex chars without it
+        var fullVal = "#" + val;
+        colorPreview.style.background = fullVal;
+        colorPreview.style.borderColor = "#d0d7de";
+        try {
+          Zotero.Prefs.set("extensions.reading-heatmap.user.color", fullVal, true);
+        } catch (e) {}
+      } else {
+        colorPreview.style.borderColor = "#cf222e";
+      }
+    });
+
+    // Also save on blur
+    colorInput.addEventListener("blur", function() {
+      var val = colorInput.value.trim();
+      if (/^[0-9A-Fa-f]{6}$/.test(val)) {
+        colorInput.value = "#" + val;
+        val = "#" + val;
+      }
+      if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
+        try {
+          Zotero.Prefs.set("extensions.reading-heatmap.user.color", val, true);
+        } catch (e) {}
+        colorPreview.style.background = val;
+        colorPreview.style.borderColor = "#d0d7de";
+      }
+    });
   },
 
   _refreshGroupList: function(doc) {
