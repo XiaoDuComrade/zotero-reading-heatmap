@@ -988,6 +988,285 @@ class HeatmapRenderer {
 
     return fragment;
   }
+
+  /**
+   * Resolve a color scheme to a 5-level color array.
+   */
+  _resolveColors(colorScheme) {
+    if (Array.isArray(colorScheme)) return colorScheme;
+    if (typeof colorScheme === "string" && /^#[0-9A-Fa-f]{6}$/.test(colorScheme)) {
+      return this.generateColorScale(colorScheme);
+    }
+    return this.COLOR_SCALES[colorScheme] || this.COLOR_SCALES.personal;
+  }
+
+  /**
+   * Build a single overlay heatmap for Group View.
+   * Each cell is split horizontally into stripes for members who have data on that day.
+   *
+   * @param {Document} doc
+   * @param {Object} groupData - { members: { deviceId: { userName, stats } }, aggregated: { dateStr: { totalSeconds } } }
+   * @param {Array} memberList - [{ deviceId, userName, colorScheme, isMe }]
+   * @param {number} year
+   * @param {number} month (1-12)
+   */
+  buildGroupOverlayHeatmapDOM(doc, groupData, memberList, year, month) {
+    var self = this;
+    var svgNS = "http://www.w3.org/2000/svg";
+    var fragment = doc.createDocumentFragment();
+
+    // --- Summary bar (aggregated) ---
+    var aggSummary = { totalSeconds: 0, activeDays: 0, currentStreak: 0, maxStreak: 0 };
+    var daysInMonth = new Date(year, month, 0).getDate();
+    var today = new Date();
+    var todayStr = this.formatDate(today);
+    var tempStreak = 0;
+
+    for (var d = 1; d <= daysInMonth; d++) {
+      var ds = year + "-" + String(month).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+      if (ds > todayStr) break;
+      var aggDay = groupData.aggregated[ds];
+      if (aggDay && aggDay.totalSeconds > 0) {
+        aggSummary.totalSeconds += aggDay.totalSeconds;
+        aggSummary.activeDays++;
+        tempStreak++;
+        if (tempStreak > aggSummary.maxStreak) aggSummary.maxStreak = tempStreak;
+      } else {
+        tempStreak = 0;
+      }
+    }
+    // Current streak (from end)
+    var endDay = (year === today.getFullYear() && month === today.getMonth() + 1) ? today.getDate() : daysInMonth;
+    for (var d2 = endDay; d2 >= 1; d2--) {
+      var ds2 = year + "-" + String(month).padStart(2, "0") + "-" + String(d2).padStart(2, "0");
+      var aggDay2 = groupData.aggregated[ds2];
+      if (aggDay2 && aggDay2.totalSeconds > 0) {
+        aggSummary.currentStreak++;
+      } else {
+        break;
+      }
+    }
+
+    var summaryDiv = doc.createElement("div");
+    summaryDiv.style.cssText = "display:flex; justify-content:space-around; flex-wrap:wrap; gap:4px; margin-bottom:10px; font-size:11px; color:#57606a; width:100%;";
+    var summaryItems = [
+      { value: this.formatDuration(aggSummary.totalSeconds), label: "Total" },
+      { value: aggSummary.activeDays + "d", label: "Active" },
+      { value: aggSummary.currentStreak + "d", label: "Streak" },
+      { value: aggSummary.maxStreak + "d", label: "Best" },
+    ];
+    for (var si = 0; si < summaryItems.length; si++) {
+      var sItem = summaryItems[si];
+      var sSpan = doc.createElement("span");
+      sSpan.style.cssText = "display:inline-flex; flex-direction:column; align-items:center; padding:3px 8px; background:#f6f8fa; border-radius:6px; flex:1; min-width:50px;";
+      var sStrong = doc.createElement("strong");
+      sStrong.style.cssText = "display:block; font-size:14px; color:#24292f;";
+      sStrong.textContent = sItem.value;
+      sSpan.appendChild(sStrong);
+      var sLabel = doc.createElement("span");
+      sLabel.style.cssText = "font-size:10px;";
+      sLabel.textContent = sItem.label;
+      sSpan.appendChild(sLabel);
+      summaryDiv.appendChild(sSpan);
+    }
+    fragment.appendChild(summaryDiv);
+
+    // --- Prepare per-member color arrays and compute per-member max ---
+    var memberColors = [];
+    var memberMaxValues = [];
+    for (var mi = 0; mi < memberList.length; mi++) {
+      memberColors.push(this._resolveColors(memberList[mi].colorScheme));
+      var mMax = 0;
+      var mStats = groupData.members[memberList[mi].deviceId].stats;
+      for (var mKey in mStats) {
+        if (mStats[mKey].totalSeconds > mMax) mMax = mStats[mKey].totalSeconds;
+      }
+      memberMaxValues.push(mMax || 1);
+    }
+
+    // --- Calendar grid ---
+    var firstDayOfWeek = new Date(year, month - 1, 1).getDay();
+    var totalCellSize = this.CELL_SIZE + this.CELL_GAP;
+    var dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    var cols = 7;
+    var rows = Math.ceil((daysInMonth + firstDayOfWeek) / 7);
+    var svgWidth = cols * totalCellSize + 50;
+    var svgHeight = rows * totalCellSize + 50;
+
+    var svg = doc.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
+    svg.setAttribute("width", "100%");
+    svg.removeAttribute("height");
+    svg.style.cssText = "display:block; width:100%;";
+
+    // Day-of-week headers
+    for (var dh = 0; dh < 7; dh++) {
+      var headerText = doc.createElementNS(svgNS, "text");
+      headerText.setAttribute("x", String(dh * totalCellSize + 25 + this.CELL_SIZE / 2));
+      headerText.setAttribute("y", "16");
+      headerText.setAttribute("font-size", "12");
+      headerText.setAttribute("fill", "#57606a");
+      headerText.setAttribute("text-anchor", "middle");
+      headerText.textContent = dayNames[dh];
+      svg.appendChild(headerText);
+    }
+
+    // Draw cells
+    for (var day = 1; day <= daysInMonth; day++) {
+      var cellDate = new Date(year, month - 1, day);
+      var dayOfWeek = cellDate.getDay();
+      var weekRow = Math.floor((day - 1 + firstDayOfWeek) / 7);
+      var dateStr = year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+      var isFuture = dateStr > todayStr;
+
+      var x = dayOfWeek * totalCellSize + 25;
+      var y = weekRow * totalCellSize + 24;
+      var cellW = this.CELL_SIZE;
+      var cellH = this.CELL_SIZE;
+
+      // Background rect (empty / future)
+      var bgRect = doc.createElementNS(svgNS, "rect");
+      bgRect.setAttribute("x", String(x));
+      bgRect.setAttribute("y", String(y));
+      bgRect.setAttribute("width", String(cellW));
+      bgRect.setAttribute("height", String(cellH));
+      bgRect.setAttribute("rx", "3");
+      bgRect.setAttribute("ry", "3");
+      bgRect.setAttribute("fill", isFuture ? "#f9f9f9" : "#ebedf0");
+      svg.appendChild(bgRect);
+
+      if (!isFuture) {
+        // Find which members have data on this day
+        var activeMembers = [];
+        var tooltipParts = [dateStr];
+        for (var mi2 = 0; mi2 < memberList.length; mi2++) {
+          var mInfo = memberList[mi2];
+          var mDayData = groupData.members[mInfo.deviceId].stats[dateStr];
+          if (mDayData && mDayData.totalSeconds > 0) {
+            var mLevel = self.getColorLevel(mDayData.totalSeconds, memberMaxValues[mi2]);
+            activeMembers.push({ index: mi2, level: mLevel, seconds: mDayData.totalSeconds });
+            tooltipParts.push(mInfo.userName + ": " + self.formatDuration(mDayData.totalSeconds));
+          }
+        }
+
+        if (activeMembers.length > 0) {
+          // Use clipPath for rounded corners on the group of stripes
+          var clipId = "clip-" + day;
+          var clipPath = doc.createElementNS(svgNS, "clipPath");
+          clipPath.setAttribute("id", clipId);
+          var clipRect = doc.createElementNS(svgNS, "rect");
+          clipRect.setAttribute("x", String(x));
+          clipRect.setAttribute("y", String(y));
+          clipRect.setAttribute("width", String(cellW));
+          clipRect.setAttribute("height", String(cellH));
+          clipRect.setAttribute("rx", "3");
+          clipRect.setAttribute("ry", "3");
+          clipPath.appendChild(clipRect);
+          svg.appendChild(clipPath);
+
+          var stripeGroup = doc.createElementNS(svgNS, "g");
+          stripeGroup.setAttribute("clip-path", "url(#" + clipId + ")");
+
+          var stripeH = cellH / activeMembers.length;
+          for (var si2 = 0; si2 < activeMembers.length; si2++) {
+            var am = activeMembers[si2];
+            var stripeColor = memberColors[am.index][am.level];
+            var stripeRect = doc.createElementNS(svgNS, "rect");
+            stripeRect.setAttribute("x", String(x));
+            stripeRect.setAttribute("y", String(y + si2 * stripeH));
+            stripeRect.setAttribute("width", String(cellW));
+            stripeRect.setAttribute("height", String(stripeH + 0.5)); // slight overlap to avoid gaps
+            stripeRect.setAttribute("fill", stripeColor);
+            stripeGroup.appendChild(stripeRect);
+          }
+          svg.appendChild(stripeGroup);
+        }
+
+        // Tooltip
+        var tooltipRect = doc.createElementNS(svgNS, "rect");
+        tooltipRect.setAttribute("x", String(x));
+        tooltipRect.setAttribute("y", String(y));
+        tooltipRect.setAttribute("width", String(cellW));
+        tooltipRect.setAttribute("height", String(cellH));
+        tooltipRect.setAttribute("fill", "transparent");
+        tooltipRect.style.cursor = "pointer";
+        var titleEl = doc.createElementNS(svgNS, "title");
+        titleEl.textContent = tooltipParts.join("\n");
+        tooltipRect.appendChild(titleEl);
+        svg.appendChild(tooltipRect);
+      }
+
+      // Today highlight
+      if (dateStr === todayStr) {
+        var todayRect = doc.createElementNS(svgNS, "rect");
+        todayRect.setAttribute("x", String(x));
+        todayRect.setAttribute("y", String(y));
+        todayRect.setAttribute("width", String(cellW));
+        todayRect.setAttribute("height", String(cellH));
+        todayRect.setAttribute("rx", "3");
+        todayRect.setAttribute("ry", "3");
+        todayRect.setAttribute("fill", "none");
+        todayRect.setAttribute("stroke", "#1f6feb");
+        todayRect.setAttribute("stroke-width", "2");
+        svg.appendChild(todayRect);
+      }
+
+      // Day number text
+      var dayText = doc.createElementNS(svgNS, "text");
+      dayText.setAttribute("x", String(x + cellW / 2));
+      dayText.setAttribute("y", String(y + cellH / 2 + 5));
+      dayText.setAttribute("font-size", "12");
+      dayText.setAttribute("text-anchor", "middle");
+      // Determine text color based on whether there are active members with high levels
+      var hasHighLevel = false;
+      if (!isFuture) {
+        for (var mi3 = 0; mi3 < memberList.length; mi3++) {
+          var mDayData3 = groupData.members[memberList[mi3].deviceId].stats[dateStr];
+          if (mDayData3 && mDayData3.totalSeconds > 0) {
+            var mLvl = self.getColorLevel(mDayData3.totalSeconds, memberMaxValues[mi3]);
+            if (mLvl >= 3) { hasHighLevel = true; break; }
+          }
+        }
+      }
+      dayText.setAttribute("fill", hasHighLevel ? "#ffffff" : "#57606a");
+      dayText.textContent = String(day);
+      svg.appendChild(dayText);
+    }
+
+    // --- Member legend (below the calendar) ---
+    var legendY = svgHeight - 5;
+    var legendX = 25;
+    for (var li = 0; li < memberList.length; li++) {
+      var mColors = memberColors[li];
+      var legendRect = doc.createElementNS(svgNS, "rect");
+      legendRect.setAttribute("x", String(legendX));
+      legendRect.setAttribute("y", String(legendY - 12));
+      legendRect.setAttribute("width", "12");
+      legendRect.setAttribute("height", "12");
+      legendRect.setAttribute("rx", "2");
+      legendRect.setAttribute("fill", mColors[4]); // Use the darkest shade
+      svg.appendChild(legendRect);
+
+      var legendText = doc.createElementNS(svgNS, "text");
+      legendText.setAttribute("x", String(legendX + 16));
+      legendText.setAttribute("y", String(legendY));
+      legendText.setAttribute("font-size", "11");
+      legendText.setAttribute("fill", "#57606a");
+      legendText.textContent = memberList[li].userName + (memberList[li].isMe ? " (You)" : "");
+      svg.appendChild(legendText);
+
+      // Estimate text width for spacing
+      legendX += 16 + (memberList[li].userName.length + (memberList[li].isMe ? 6 : 0)) * 7 + 12;
+    }
+
+    // Wrap SVG
+    var svgWrapper = doc.createElement("div");
+    svgWrapper.style.cssText = "width:100%; margin-bottom:4px;";
+    svgWrapper.appendChild(svg);
+    fragment.appendChild(svgWrapper);
+
+    return fragment;
+  }
 }
 
 
@@ -1414,11 +1693,11 @@ Zotero.ReadingHeatmap = {
     groupHeader.textContent = "\uD83D\uDC65 " + groupName;
     body.appendChild(groupHeader);
 
-    // Render individual member heatmaps only (no aggregated view)
-    var colorKeys = ["user1", "user2", "user3"];
+    // Build member list with color assignments
+    var otherColorKeys = ["user1", "user2", "user3"];
     var colorIndex = 0;
     var myDeviceId = this.storage.getDeviceId();
-    var isFirst = true;
+    var memberList = [];
 
     // Get user's custom color from preferences
     var myColor = "personal";
@@ -1432,24 +1711,20 @@ Zotero.ReadingHeatmap = {
     for (var deviceId in groupData.members) {
       var member = groupData.members[deviceId];
       var isMe = (deviceId === myDeviceId);
-      var memberLabel = member.userName + (isMe ? " (You)" : "");
-      var memberColor = isMe ? myColor : colorKeys[colorIndex % colorKeys.length];
+      memberList.push({
+        deviceId: deviceId,
+        userName: member.userName,
+        colorScheme: isMe ? myColor : otherColorKeys[colorIndex % otherColorKeys.length],
+        isMe: isMe,
+      });
       if (!isMe) colorIndex++;
-
-      var memberSummary = this.storage.computeSummaryFromStats(member.stats, year, month);
-      var memberFragment = this.renderer.buildMonthlyHeatmapDOM(
-        doc, member.stats, memberSummary, year, month, memberColor, memberLabel
-      );
-
-      if (!isFirst) {
-        // Add a separator between members
-        var sep = doc.createElement("hr");
-        sep.style.cssText = "border:none; border-top:1px solid #d0d7de; margin:8px 0;";
-        body.appendChild(sep);
-      }
-      body.appendChild(memberFragment);
-      isFirst = false;
     }
+
+    // Render single overlay heatmap with all members
+    var overlayFragment = this.renderer.buildGroupOverlayHeatmapDOM(
+      doc, groupData, memberList, year, month
+    );
+    body.appendChild(overlayFragment);
   },
 
   _switchToGroupView() {
