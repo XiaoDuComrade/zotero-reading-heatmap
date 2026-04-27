@@ -1,18 +1,17 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.5.1
+ * Reading Heatmap - Main Plugin Script v0.6.0
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
  * instead of innerHTML, because Zotero 8's ItemPane section body strips HTML tags
  * when innerHTML is used.
  * 
- * Changes in v0.5.1:
- * - Sidebar: removed Import/Export buttons, added Group/Personal view toggle
- * - Settings: added Test Server button
- * - Fixed group management buttons (command -> click event)
- * - Full group sync: download + render group members' heatmaps
- * - SyncManager: testServer(), improved error handling
+ * Changes in v0.6.0:
+ * - Added week/month calendar view toggle in the side panel
+ * - Added summary toggle button to show/hide Total/Active/Streak/Best stats
+ * - Fixed group view legend overflow: legends now wrap within sidebar width
+ * - Various UI polish and code cleanup
  */
 
 // ============================================================
@@ -31,6 +30,7 @@ class StorageManager {
   async init() {
     this.filePath = PathUtils.join(Zotero.DataDirectory.dir, this.FILENAME);
     await this._load();
+    this.syncProfileFromPrefs();
     Zotero.debug("[ReadingHeatmap:Storage] Initialized at " + this.filePath);
   }
 
@@ -39,6 +39,7 @@ class StorageManager {
       if (await IOUtils.exists(this.filePath)) {
         var content = await IOUtils.readUTF8(this.filePath);
         this.data = JSON.parse(content);
+        this._ensureShape();
         Zotero.debug("[ReadingHeatmap:Storage] Loaded existing data");
       } else {
         this._initEmpty();
@@ -53,10 +54,58 @@ class StorageManager {
     this.data = {
       deviceId: Zotero.Utilities.randomString(32),
       userName: "",
+      userColor: "#216e39",
       dailyStats: {},
       groups: {},
     };
     this._save();
+  }
+
+  _ensureShape() {
+    if (!this.data) this.data = {};
+    if (!this.data.deviceId) this.data.deviceId = Zotero.Utilities.randomString(32);
+    if (!this.data.dailyStats) this.data.dailyStats = {};
+    if (!this.data.groups) this.data.groups = {};
+    if (!this.data.userColor) this.data.userColor = "#216e39";
+  }
+
+  syncProfileFromPrefs() {
+    try {
+      var prefName = Zotero.Prefs.get("extensions.reading-heatmap.user.name", true) || "";
+      var prefColor = Zotero.Prefs.get("extensions.reading-heatmap.user.color", true) || "";
+      var changed = false;
+
+      if (prefName && prefName !== this.data.userName) {
+        this.data.userName = prefName;
+        changed = true;
+      } else if (!prefName && this.data.userName) {
+        Zotero.Prefs.set("extensions.reading-heatmap.user.name", this.data.userName, true);
+      }
+
+      var normalizedColor = this.normalizeColor(prefColor) || this.normalizeColor(this.data.userColor) || "#216e39";
+      if (normalizedColor !== this.data.userColor) {
+        this.data.userColor = normalizedColor;
+        changed = true;
+      }
+      if (prefColor !== normalizedColor) {
+        Zotero.Prefs.set("extensions.reading-heatmap.user.color", normalizedColor, true);
+      }
+
+      if (changed) this._scheduleSave();
+    } catch (e) {
+      Zotero.debug("[ReadingHeatmap:Storage] Profile sync error: " + e);
+    }
+  }
+
+  normalizeColor(color) {
+    if (!color) return null;
+    var value = String(color).trim();
+    var shortHex = /^#?([0-9a-fA-F]{3})$/.exec(value);
+    if (shortHex) {
+      return "#" + shortHex[1].split("").map(function(ch) { return ch + ch; }).join("").toLowerCase();
+    }
+    var fullHex = /^#?([0-9a-fA-F]{6})$/.exec(value);
+    return fullHex ? "#" + fullHex[1].toLowerCase() : null;
   }
 
   getToday() {
@@ -125,6 +174,26 @@ class StorageManager {
     return result;
   }
 
+  /**
+   * Get stats for the week containing the given date.
+   * Week starts on Sunday.
+   * @param {Date} refDate - reference date
+   * @returns {Object} stats keyed by dateStr
+   */
+  getWeeklyStats(refDate) {
+    var result = {};
+    var day = refDate.getDay(); // 0=Sun
+    var startOfWeek = new Date(refDate);
+    startOfWeek.setDate(startOfWeek.getDate() - day);
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(startOfWeek);
+      d.setDate(d.getDate() + i);
+      var dateStr = this.formatDate(d);
+      result[dateStr] = this.data.dailyStats[dateStr] || { totalSeconds: 0, items: {} };
+    }
+    return result;
+  }
+
   getMonthlySummary(year, month) {
     var stats = this.getMonthlyStats(year, month);
     var totalSeconds = 0, activeDays = 0, maxSeconds = 0;
@@ -169,7 +238,7 @@ class StorageManager {
   }
 
   /**
-   * Compute monthly summary from arbitrary stats object (for group data)
+   * Compute summary from arbitrary stats object (for group data or weekly data)
    */
   computeSummaryFromStats(stats, year, month) {
     var totalSeconds = 0, activeDays = 0, maxSeconds = 0;
@@ -200,9 +269,48 @@ class StorageManager {
 
     var endDay = (year === today.getFullYear() && month === today.getMonth() + 1)
       ? today.getDate() : daysInMonth;
-    for (var d = endDay; d >= 1; d--) {
-      var ds2 = year + "-" + String(month).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+    for (var d2 = endDay; d2 >= 1; d2--) {
+      var ds2 = year + "-" + String(month).padStart(2, "0") + "-" + String(d2).padStart(2, "0");
       if (stats[ds2] && stats[ds2].totalSeconds > 0) {
+        currentStreak++;
+      } else {
+        break;
+      }
+    }
+
+    return { totalSeconds, activeDays, maxSeconds, currentStreak, maxStreak };
+  }
+
+  /**
+   * Compute a simple summary from arbitrary stats (no month dependency, for weekly view)
+   */
+  computeSimpleSummary(stats) {
+    var totalSeconds = 0, activeDays = 0, maxSeconds = 0;
+    var sortedDates = Object.keys(stats).sort();
+    var currentStreak = 0, maxStreak = 0, tempStreak = 0;
+    var today = new Date();
+    var todayStr = this.formatDate(today);
+
+    for (var i = 0; i < sortedDates.length; i++) {
+      var dateStr = sortedDates[i];
+      var dayData = stats[dateStr];
+      if (dateStr > todayStr) continue;
+      if (dayData && dayData.totalSeconds > 0) {
+        totalSeconds += dayData.totalSeconds;
+        activeDays++;
+        if (dayData.totalSeconds > maxSeconds) maxSeconds = dayData.totalSeconds;
+        tempStreak++;
+        if (tempStreak > maxStreak) maxStreak = tempStreak;
+      } else {
+        tempStreak = 0;
+      }
+    }
+
+    // current streak from end
+    currentStreak = 0;
+    for (var j = sortedDates.length - 1; j >= 0; j--) {
+      if (sortedDates[j] > todayStr) continue;
+      if (stats[sortedDates[j]] && stats[sortedDates[j]].totalSeconds > 0) {
         currentStreak++;
       } else {
         break;
@@ -252,17 +360,10 @@ class StorageManager {
 
   _scheduleSave() {
     if (this.saveTimer) return;
-    var self = this;
-    var _setTimeout = (typeof Zotero !== "undefined" && Zotero.setTimeout) ? Zotero.setTimeout : setTimeout;
-    try {
-      this.saveTimer = _setTimeout(function() {
-        self._save();
-        self.saveTimer = null;
-      }, 5000);
-    } catch (e) {
-      Zotero.debug("[ReadingHeatmap:Storage] _scheduleSave timer error: " + e + ", saving immediately");
+    this.saveTimer = Zotero.setTimeout(() => {
       this._save();
-    }
+      this.saveTimer = null;
+    }, 5000);
   }
 
   async _save() {
@@ -277,20 +378,26 @@ class StorageManager {
 
   async forceSave() {
     if (this.saveTimer) {
-      var _clearTimeout = (typeof Zotero !== "undefined" && Zotero.clearTimeout) ? Zotero.clearTimeout : clearTimeout;
-      try {
-        _clearTimeout(this.saveTimer);
-      } catch (e) {
-        try { clearTimeout(this.saveTimer); } catch (e2) {}
-      }
+      Zotero.clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
     await this._save();
   }
 
   getDeviceId() { return this.data.deviceId; }
-  getUserName() { return this.data.userName || "Anonymous"; }
-  setUserName(name) { this.data.userName = name; this._scheduleSave(); }
+  getUserName() { this.syncProfileFromPrefs(); return this.data.userName || "Anonymous"; }
+  setUserName(name) {
+    this.data.userName = name || "";
+    Zotero.Prefs.set("extensions.reading-heatmap.user.name", this.data.userName, true);
+    this._scheduleSave();
+  }
+  getUserColor() { this.syncProfileFromPrefs(); return this.normalizeColor(this.data.userColor) || "#216e39"; }
+  setUserColor(color) {
+    var normalized = this.normalizeColor(color) || "#216e39";
+    this.data.userColor = normalized;
+    Zotero.Prefs.set("extensions.reading-heatmap.user.color", normalized, true);
+    this._scheduleSave();
+  }
   getGroups() { return this.data.groups || {}; }
   addGroup(id, info) { this.data.groups[id] = info; this._scheduleSave(); }
   removeGroup(id) { delete this.data.groups[id]; this._scheduleSave(); }
@@ -336,9 +443,7 @@ class ReadingTracker {
 
   _onNotify(event, type, ids, extraData) {
     if (type === "tab") {
-      var self = this;
-      var _setTimeout = (typeof Zotero !== "undefined" && Zotero.setTimeout) ? Zotero.setTimeout : setTimeout;
-      try { _setTimeout(function() { self._checkCurrentTab(); }, 500); } catch(e) { setTimeout(function() { self._checkCurrentTab(); }, 500); }
+      Zotero.setTimeout(() => this._checkCurrentTab(), 500);
     }
   }
 
@@ -387,15 +492,12 @@ class ReadingTracker {
 
   _startPolling() {
     if (this.pollInterval) return;
-    var self = this;
-    var _setInterval = (typeof Zotero !== "undefined" && Zotero.setInterval) ? Zotero.setInterval : setInterval;
-    try { this.pollInterval = _setInterval(function() { self._poll(); }, this.POLL_INTERVAL_MS); } catch(e) { this.pollInterval = setInterval(function() { self._poll(); }, this.POLL_INTERVAL_MS); }
+    this.pollInterval = Zotero.setInterval(() => this._poll(), this.POLL_INTERVAL_MS);
   }
 
   _stopPolling() {
     if (this.pollInterval) {
-      var _clearInterval = (typeof Zotero !== "undefined" && Zotero.clearInterval) ? Zotero.clearInterval : clearInterval;
-      try { _clearInterval(this.pollInterval); } catch(e) { try { clearInterval(this.pollInterval); } catch(e2) {} }
+      Zotero.clearInterval(this.pollInterval);
       this.pollInterval = null;
     }
   }
@@ -477,7 +579,7 @@ class SyncManager {
     this.baseURL = "";
     this.SYNC_INTERVAL_MS = 5 * 60 * 1000;
     this.DEFAULT_SERVER = "";
-    this._cachedGroupData = {};  // Cache downloaded group data
+    this._cachedGroupData = {};
   }
 
   init() {
@@ -498,21 +600,14 @@ class SyncManager {
   _getServerURL() {
     try {
       var url = Zotero.Prefs.get("extensions.reading-heatmap.server.url", true) || "";
-      // Remove trailing slash
       return url.replace(/\/+$/, "");
     } catch (e) { return ""; }
   }
 
-  /**
-   * Refresh server URL from prefs (called when settings change)
-   */
   refreshServerURL() {
     this.baseURL = this._getServerURL();
   }
 
-  /**
-   * Test server connection. Returns { success, message, latency }
-   */
   async testServer(url) {
     var testURL = (url || this.baseURL || "").replace(/\/+$/, "");
     if (!testURL) {
@@ -542,6 +637,7 @@ class SyncManager {
   async _registerDevice() {
     try {
       if (!this.baseURL) return;
+      this.storage.syncProfileFromPrefs();
       await this._post("/api/register", {
         deviceId: this.storage.getDeviceId(),
         userName: this.storage.getUserName(),
@@ -558,6 +654,7 @@ class SyncManager {
       return null;
     }
     try {
+      await this._registerDevice();
       var result = await this._post("/api/group/create", {
         deviceId: this.storage.getDeviceId(), groupName: groupName
       });
@@ -582,6 +679,7 @@ class SyncManager {
       return null;
     }
     try {
+      await this._registerDevice();
       var result = await this._post("/api/group/join", {
         deviceId: this.storage.getDeviceId(), inviteCode: inviteCode.toUpperCase()
       });
@@ -603,6 +701,7 @@ class SyncManager {
     try {
       if (!this.baseURL) return;
       if (Object.keys(this.storage.getGroups()).length === 0) return;
+      await this._registerDevice();
       var stats = this.storage.getDailyStats(30);
       var filtered = {};
       for (var date in stats) {
@@ -631,9 +730,6 @@ class SyncManager {
     return null;
   }
 
-  /**
-   * Get cached group data, or download if not available
-   */
   async getGroupData(groupId) {
     if (this._cachedGroupData[groupId]) {
       return this._cachedGroupData[groupId];
@@ -641,10 +737,6 @@ class SyncManager {
     return await this.downloadGroupStats(groupId);
   }
 
-  /**
-   * Get monthly stats for a specific group, aggregated from all members.
-   * Returns { members: { deviceId: { userName, stats } }, aggregated: { dateStr: { totalSeconds } } }
-   */
   async getGroupMonthlyData(groupId, year, month) {
     var groupData = await this.getGroupData(groupId);
     if (!groupData) return null;
@@ -652,13 +744,11 @@ class SyncManager {
     var result = { members: {}, aggregated: {} };
     var daysInMonth = new Date(year, month, 0).getDate();
 
-    // Initialize aggregated stats
     for (var day = 1; day <= daysInMonth; day++) {
       var dateStr = year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
       result.aggregated[dateStr] = { totalSeconds: 0 };
     }
 
-    // Process each member
     for (var deviceId in groupData) {
       var memberData = groupData[deviceId];
       var memberStats = {};
@@ -668,6 +758,47 @@ class SyncManager {
         var dayData = memberData.stats[ds] || { totalSeconds: 0 };
         memberStats[ds] = dayData;
         result.aggregated[ds].totalSeconds += dayData.totalSeconds;
+      }
+
+      result.members[deviceId] = {
+        userName: memberData.userName || "Anonymous",
+        stats: memberStats,
+      };
+    }
+
+    return result;
+  }
+
+  /**
+   * Get group weekly data for a specific week.
+   */
+  async getGroupWeeklyData(groupId, refDate) {
+    var groupData = await this.getGroupData(groupId);
+    if (!groupData) return null;
+
+    var result = { members: {}, aggregated: {} };
+    var day = refDate.getDay();
+    var startOfWeek = new Date(refDate);
+    startOfWeek.setDate(startOfWeek.getDate() - day);
+
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(startOfWeek);
+      d.setDate(d.getDate() + i);
+      var dateStr = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      result.aggregated[dateStr] = { totalSeconds: 0 };
+    }
+
+    for (var deviceId in groupData) {
+      var memberData = groupData[deviceId];
+      var memberStats = {};
+
+      for (var j = 0; j < 7; j++) {
+        var d2 = new Date(startOfWeek);
+        d2.setDate(d2.getDate() + j);
+        var ds = d2.getFullYear() + "-" + String(d2.getMonth() + 1).padStart(2, "0") + "-" + String(d2.getDate()).padStart(2, "0");
+        var dayData2 = memberData.stats[ds] || { totalSeconds: 0 };
+        memberStats[ds] = dayData2;
+        result.aggregated[ds].totalSeconds += dayData2.totalSeconds;
       }
 
       result.members[deviceId] = {
@@ -690,20 +821,12 @@ class SyncManager {
 
   _startSyncTimer() {
     if (this.syncTimer) return;
-    var self = this;
-    var _setInterval = (typeof Zotero !== "undefined" && Zotero.setInterval) ? Zotero.setInterval : setInterval;
-    var _setTimeout = (typeof Zotero !== "undefined" && Zotero.setTimeout) ? Zotero.setTimeout : setTimeout;
-    try { this.syncTimer = _setInterval(function() { self.syncAll(); }, this.SYNC_INTERVAL_MS); } catch(e) { this.syncTimer = setInterval(function() { self.syncAll(); }, this.SYNC_INTERVAL_MS); }
-    // Initial sync after 10 seconds
-    try { _setTimeout(function() { self.syncAll(); }, 10000); } catch(e) { setTimeout(function() { self.syncAll(); }, 10000); }
+    this.syncTimer = Zotero.setInterval(() => this.syncAll(), this.SYNC_INTERVAL_MS);
+    Zotero.setTimeout(() => this.syncAll(), 10000);
   }
 
   _stopSyncTimer() {
-    if (this.syncTimer) {
-      var _clearInterval = (typeof Zotero !== "undefined" && Zotero.clearInterval) ? Zotero.clearInterval : clearInterval;
-      try { _clearInterval(this.syncTimer); } catch(e) { try { clearInterval(this.syncTimer); } catch(e2) {} }
-      this.syncTimer = null;
-    }
+    if (this.syncTimer) { Zotero.clearInterval(this.syncTimer); this.syncTimer = null; }
   }
 
   async _get(endpoint) {
@@ -732,7 +855,7 @@ class SyncManager {
 
 
 // ============================================================
-// SECTION 4: HeatmapRenderer (Monthly View with Pagination)
+// SECTION 4: HeatmapRenderer (Monthly + Weekly View)
 // ============================================================
 
 class HeatmapRenderer {
@@ -745,6 +868,50 @@ class HeatmapRenderer {
     };
     this.CELL_SIZE = 30;
     this.CELL_GAP = 4;
+  }
+
+  normalizeHexColor(color) {
+    if (!color) return null;
+    var value = String(color).trim();
+    var shortHex = /^#?([0-9a-fA-F]{3})$/.exec(value);
+    if (shortHex) {
+      return "#" + shortHex[1].split("").map(function(ch) { return ch + ch; }).join("").toLowerCase();
+    }
+    var fullHex = /^#?([0-9a-fA-F]{6})$/.exec(value);
+    return fullHex ? "#" + fullHex[1].toLowerCase() : null;
+  }
+
+  _hexToRgb(hex) {
+    var normalized = this.normalizeHexColor(hex);
+    if (!normalized) return null;
+    var n = parseInt(normalized.slice(1), 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+
+  _mixWithWhite(hex, amount) {
+    var rgb = this._hexToRgb(hex);
+    if (!rgb) return hex;
+    var r = Math.round(255 + (rgb.r - 255) * amount);
+    var g = Math.round(255 + (rgb.g - 255) * amount);
+    var b = Math.round(255 + (rgb.b - 255) * amount);
+    return "#" + [r, g, b].map(function(value) {
+      return value.toString(16).padStart(2, "0");
+    }).join("");
+  }
+
+  getColorScale(colorScheme) {
+    if (Array.isArray(colorScheme)) return colorScheme;
+    var customColor = this.normalizeHexColor(colorScheme);
+    if (customColor) {
+      return [
+        "#ebedf0",
+        this._mixWithWhite(customColor, 0.25),
+        this._mixWithWhite(customColor, 0.5),
+        this._mixWithWhite(customColor, 0.75),
+        customColor,
+      ];
+    }
+    return this.COLOR_SCALES[colorScheme] || this.COLOR_SCALES.personal;
   }
 
   formatDuration(seconds) {
@@ -773,62 +940,10 @@ class HeatmapRenderer {
   }
 
   /**
-   * Generate a 5-level color scale from a single hex color.
-   * Level 0 is always the empty/background color (#ebedf0).
-   * Levels 1-4 are progressively more saturated/darker shades.
+   * Build a summary bar as a DOM fragment.
+   * Returns the fragment so caller can append or skip it.
    */
-  generateColorScale(hexColor) {
-    if (!hexColor || !/^#[0-9A-Fa-f]{6}$/.test(hexColor)) {
-      return this.COLOR_SCALES.personal;
-    }
-    var r = parseInt(hexColor.slice(1, 3), 16);
-    var g = parseInt(hexColor.slice(3, 5), 16);
-    var b = parseInt(hexColor.slice(5, 7), 16);
-
-    // Generate 4 levels by mixing with white (light) to full color (dark)
-    var levels = ["#ebedf0"];
-    var opacities = [0.25, 0.50, 0.75, 1.0];
-    for (var i = 0; i < opacities.length; i++) {
-      var op = opacities[i];
-      var mr = Math.round(255 + (r - 255) * op);
-      var mg = Math.round(255 + (g - 255) * op);
-      var mb = Math.round(255 + (b - 255) * op);
-      levels.push("#" + ((1 << 24) + (mr << 16) + (mg << 8) + mb).toString(16).slice(1));
-    }
-    return levels;
-  }
-
-  /**
-   * Build a monthly heatmap using DOM API.
-   * @param {Document} doc
-   * @param {Object} stats - { dateStr: { totalSeconds, items } }
-   * @param {Object} summary - { totalSeconds, activeDays, currentStreak, maxStreak }
-   * @param {number} year
-   * @param {number} month (1-12)
-   * @param {string|Array} colorScheme - key in COLOR_SCALES, a hex color string, or an array of 5 colors
-   * @param {string} [label] - optional label shown above heatmap (e.g. user name)
-   */
-  buildMonthlyHeatmapDOM(doc, stats, summary, year, month, colorScheme, label) {
-    colorScheme = colorScheme || "personal";
-    var colors;
-    if (Array.isArray(colorScheme)) {
-      colors = colorScheme;
-    } else if (typeof colorScheme === "string" && /^#[0-9A-Fa-f]{6}$/.test(colorScheme)) {
-      colors = this.generateColorScale(colorScheme);
-    } else {
-      colors = this.COLOR_SCALES[colorScheme] || this.COLOR_SCALES.personal;
-    }
-    var fragment = doc.createDocumentFragment();
-
-    // --- Optional label ---
-    if (label) {
-      var labelDiv = doc.createElement("div");
-      labelDiv.style.cssText = "font-size:12px; font-weight:600; color:#24292f; margin-bottom:4px; padding-left:2px;";
-      labelDiv.textContent = label;
-      fragment.appendChild(labelDiv);
-    }
-
-    // --- Summary bar ---
+  _buildSummaryBar(doc, summary) {
     var summaryDiv = doc.createElement("div");
     summaryDiv.style.cssText = "display:flex; justify-content:space-around; flex-wrap:wrap; gap:4px; margin-bottom:10px; font-size:11px; color:#57606a; width:100%;";
 
@@ -856,7 +971,65 @@ class HeatmapRenderer {
 
       summaryDiv.appendChild(span);
     }
-    fragment.appendChild(summaryDiv);
+    return summaryDiv;
+  }
+
+  /**
+   * Build an HTML-based legend that wraps within container width.
+   * This replaces the old SVG-based legend to fix overflow issues.
+   */
+  _buildLegendHTML(doc, colorScheme) {
+    var colors = this.getColorScale(colorScheme);
+    var legendDiv = doc.createElement("div");
+    legendDiv.style.cssText = "display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:3px; margin-top:4px; margin-bottom:4px; font-size:11px; color:#57606a;";
+
+    var lessSpan = doc.createElement("span");
+    lessSpan.textContent = "Less";
+    lessSpan.style.cssText = "margin-right:2px;";
+    legendDiv.appendChild(lessSpan);
+
+    for (var i = 0; i < 5; i++) {
+      var box = doc.createElement("span");
+      box.style.cssText = "display:inline-block; width:14px; height:14px; border-radius:3px; background:" + colors[i] + ";";
+      legendDiv.appendChild(box);
+    }
+
+    var moreSpan = doc.createElement("span");
+    moreSpan.textContent = "More";
+    moreSpan.style.cssText = "margin-left:2px;";
+    legendDiv.appendChild(moreSpan);
+
+    return legendDiv;
+  }
+
+  /**
+   * Build a monthly heatmap using DOM API.
+   * @param {Document} doc
+   * @param {Object} stats
+   * @param {Object} summary
+   * @param {number} year
+   * @param {number} month (1-12)
+   * @param {string} colorScheme
+   * @param {string} [label]
+   * @param {boolean} showSummary - whether to show the summary bar
+   */
+  buildMonthlyHeatmapDOM(doc, stats, summary, year, month, colorScheme, label, showSummary) {
+    colorScheme = colorScheme || "personal";
+    var colors = this.getColorScale(colorScheme);
+    var fragment = doc.createDocumentFragment();
+
+    // --- Optional label ---
+    if (label) {
+      var labelDiv = doc.createElement("div");
+      labelDiv.style.cssText = "font-size:12px; font-weight:600; color:#24292f; margin-bottom:4px; padding-left:2px;";
+      labelDiv.textContent = label;
+      fragment.appendChild(labelDiv);
+    }
+
+    // --- Summary bar (conditional) ---
+    if (showSummary !== false) {
+      fragment.appendChild(this._buildSummaryBar(doc, summary));
+    }
 
     // --- Calendar-style Monthly Heatmap ---
     var daysInMonth = new Date(year, month, 0).getDate();
@@ -875,7 +1048,7 @@ class HeatmapRenderer {
     var cols = 7;
     var rows = Math.ceil((daysInMonth + firstDayOfWeek) / 7);
     var svgWidth = cols * totalCellSize + 50;
-    var svgHeight = rows * totalCellSize + 50;
+    var svgHeight = rows * totalCellSize + 30;
 
     var svg = doc.createElementNS(svgNS, "svg");
     svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
@@ -949,149 +1122,59 @@ class HeatmapRenderer {
       svg.appendChild(dayText);
     }
 
-    // Legend
-    var legendY = svgHeight - 5;
-    var legendX = svgWidth - 160;
-
-    var lessText = doc.createElementNS(svgNS, "text");
-    lessText.setAttribute("x", String(legendX - 30));
-    lessText.setAttribute("y", String(legendY));
-    lessText.setAttribute("font-size", "12");
-    lessText.setAttribute("fill", "#57606a");
-    lessText.textContent = "Less";
-    svg.appendChild(lessText);
-
-    for (var li = 0; li < 5; li++) {
-      var legendRect = doc.createElementNS(svgNS, "rect");
-      legendRect.setAttribute("x", String(legendX + li * 22));
-      legendRect.setAttribute("y", String(legendY - 12));
-      legendRect.setAttribute("width", "16");
-      legendRect.setAttribute("height", "16");
-      legendRect.setAttribute("rx", "3");
-      legendRect.setAttribute("fill", colors[li]);
-      svg.appendChild(legendRect);
-    }
-
-    var moreText = doc.createElementNS(svgNS, "text");
-    moreText.setAttribute("x", String(legendX + 115));
-    moreText.setAttribute("y", String(legendY));
-    moreText.setAttribute("font-size", "12");
-    moreText.setAttribute("fill", "#57606a");
-    moreText.textContent = "More";
-    svg.appendChild(moreText);
-
-    // Wrap SVG
+    // Wrap SVG (no legend inside SVG anymore)
     var svgWrapper = doc.createElement("div");
-    svgWrapper.style.cssText = "width:100%; margin-bottom:4px;";
+    svgWrapper.style.cssText = "width:100%; margin-bottom:2px;";
     svgWrapper.appendChild(svg);
     fragment.appendChild(svgWrapper);
+
+    // Legend as HTML (wraps properly)
+    fragment.appendChild(this._buildLegendHTML(doc, colorScheme));
 
     return fragment;
   }
 
   /**
-   * Resolve a color scheme to a 5-level color array.
-   */
-  _resolveColors(colorScheme) {
-    if (Array.isArray(colorScheme)) return colorScheme;
-    if (typeof colorScheme === "string" && /^#[0-9A-Fa-f]{6}$/.test(colorScheme)) {
-      return this.generateColorScale(colorScheme);
-    }
-    return this.COLOR_SCALES[colorScheme] || this.COLOR_SCALES.personal;
-  }
-
-  /**
-   * Build a single overlay heatmap for Group View.
-   * Each cell is split horizontally into stripes for members who have data on that day.
-   *
+   * Build a weekly heatmap (single row of 7 cells).
    * @param {Document} doc
-   * @param {Object} groupData - { members: { deviceId: { userName, stats } }, aggregated: { dateStr: { totalSeconds } } }
-   * @param {Array} memberList - [{ deviceId, userName, colorScheme, isMe }]
-   * @param {number} year
-   * @param {number} month (1-12)
+   * @param {Object} stats - 7-day stats keyed by dateStr
+   * @param {Object} summary
+   * @param {Date} refDate - reference date for the week
+   * @param {string} colorScheme
+   * @param {string} [label]
+   * @param {boolean} showSummary
    */
-  buildGroupOverlayHeatmapDOM(doc, groupData, memberList, year, month) {
-    var self = this;
-    var svgNS = "http://www.w3.org/2000/svg";
+  buildWeeklyHeatmapDOM(doc, stats, summary, refDate, colorScheme, label, showSummary) {
+    colorScheme = colorScheme || "personal";
+    var colors = this.getColorScale(colorScheme);
     var fragment = doc.createDocumentFragment();
 
-    // --- Summary bar (aggregated) ---
-    var aggSummary = { totalSeconds: 0, activeDays: 0, currentStreak: 0, maxStreak: 0 };
-    var daysInMonth = new Date(year, month, 0).getDate();
-    var today = new Date();
-    var todayStr = this.formatDate(today);
-    var tempStreak = 0;
-
-    for (var d = 1; d <= daysInMonth; d++) {
-      var ds = year + "-" + String(month).padStart(2, "0") + "-" + String(d).padStart(2, "0");
-      if (ds > todayStr) break;
-      var aggDay = groupData.aggregated[ds];
-      if (aggDay && aggDay.totalSeconds > 0) {
-        aggSummary.totalSeconds += aggDay.totalSeconds;
-        aggSummary.activeDays++;
-        tempStreak++;
-        if (tempStreak > aggSummary.maxStreak) aggSummary.maxStreak = tempStreak;
-      } else {
-        tempStreak = 0;
-      }
-    }
-    // Current streak (from end)
-    var endDay = (year === today.getFullYear() && month === today.getMonth() + 1) ? today.getDate() : daysInMonth;
-    for (var d2 = endDay; d2 >= 1; d2--) {
-      var ds2 = year + "-" + String(month).padStart(2, "0") + "-" + String(d2).padStart(2, "0");
-      var aggDay2 = groupData.aggregated[ds2];
-      if (aggDay2 && aggDay2.totalSeconds > 0) {
-        aggSummary.currentStreak++;
-      } else {
-        break;
-      }
+    // --- Optional label ---
+    if (label) {
+      var labelDiv = doc.createElement("div");
+      labelDiv.style.cssText = "font-size:12px; font-weight:600; color:#24292f; margin-bottom:4px; padding-left:2px;";
+      labelDiv.textContent = label;
+      fragment.appendChild(labelDiv);
     }
 
-    var summaryDiv = doc.createElement("div");
-    summaryDiv.style.cssText = "display:flex; justify-content:space-around; flex-wrap:wrap; gap:4px; margin-bottom:10px; font-size:11px; color:#57606a; width:100%;";
-    var summaryItems = [
-      { value: this.formatDuration(aggSummary.totalSeconds), label: "Total" },
-      { value: aggSummary.activeDays + "d", label: "Active" },
-      { value: aggSummary.currentStreak + "d", label: "Streak" },
-      { value: aggSummary.maxStreak + "d", label: "Best" },
-    ];
-    for (var si = 0; si < summaryItems.length; si++) {
-      var sItem = summaryItems[si];
-      var sSpan = doc.createElement("span");
-      sSpan.style.cssText = "display:inline-flex; flex-direction:column; align-items:center; padding:3px 8px; background:#f6f8fa; border-radius:6px; flex:1; min-width:50px;";
-      var sStrong = doc.createElement("strong");
-      sStrong.style.cssText = "display:block; font-size:14px; color:#24292f;";
-      sStrong.textContent = sItem.value;
-      sSpan.appendChild(sStrong);
-      var sLabel = doc.createElement("span");
-      sLabel.style.cssText = "font-size:10px;";
-      sLabel.textContent = sItem.label;
-      sSpan.appendChild(sLabel);
-      summaryDiv.appendChild(sSpan);
-    }
-    fragment.appendChild(summaryDiv);
-
-    // --- Prepare per-member color arrays and compute per-member max ---
-    var memberColors = [];
-    var memberMaxValues = [];
-    for (var mi = 0; mi < memberList.length; mi++) {
-      memberColors.push(this._resolveColors(memberList[mi].colorScheme));
-      var mMax = 0;
-      var mStats = groupData.members[memberList[mi].deviceId].stats;
-      for (var mKey in mStats) {
-        if (mStats[mKey].totalSeconds > mMax) mMax = mStats[mKey].totalSeconds;
-      }
-      memberMaxValues.push(mMax || 1);
+    // --- Summary bar (conditional) ---
+    if (showSummary !== false) {
+      fragment.appendChild(this._buildSummaryBar(doc, summary));
     }
 
-    // --- Calendar grid ---
-    var firstDayOfWeek = new Date(year, month - 1, 1).getDay();
+    // --- Weekly heatmap: single row ---
     var totalCellSize = this.CELL_SIZE + this.CELL_GAP;
     var dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    var cols = 7;
-    var rows = Math.ceil((daysInMonth + firstDayOfWeek) / 7);
-    var svgWidth = cols * totalCellSize + 50;
-    var svgHeight = rows * totalCellSize + 50;
+
+    var values = [];
+    for (var key in stats) {
+      if (stats[key].totalSeconds > 0) values.push(stats[key].totalSeconds);
+    }
+    var maxValue = values.length > 0 ? Math.max.apply(null, values) : 1;
+
+    var svgNS = "http://www.w3.org/2000/svg";
+    var svgWidth = 7 * totalCellSize + 50;
+    var svgHeight = totalCellSize + 30;
 
     var svg = doc.createElementNS(svgNS, "svg");
     svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
@@ -1099,171 +1182,80 @@ class HeatmapRenderer {
     svg.removeAttribute("height");
     svg.style.cssText = "display:block; width:100%;";
 
-    // Day-of-week headers
-    for (var dh = 0; dh < 7; dh++) {
+    var today = new Date();
+    var todayStr = this.formatDate(today);
+
+    // Compute start of week
+    var dayOfRef = refDate.getDay();
+    var startOfWeek = new Date(refDate);
+    startOfWeek.setDate(startOfWeek.getDate() - dayOfRef);
+
+    // Day headers + cells
+    for (var i = 0; i < 7; i++) {
+      var cellDate = new Date(startOfWeek);
+      cellDate.setDate(cellDate.getDate() + i);
+      var dateStr = this.formatDate(cellDate);
+      var dayData = stats[dateStr] || { totalSeconds: 0, items: {} };
+
+      var x = i * totalCellSize + 25;
+
+      // Header
       var headerText = doc.createElementNS(svgNS, "text");
-      headerText.setAttribute("x", String(dh * totalCellSize + 25 + this.CELL_SIZE / 2));
-      headerText.setAttribute("y", "16");
+      headerText.setAttribute("x", String(x + this.CELL_SIZE / 2));
+      headerText.setAttribute("y", "14");
       headerText.setAttribute("font-size", "12");
       headerText.setAttribute("fill", "#57606a");
       headerText.setAttribute("text-anchor", "middle");
-      headerText.textContent = dayNames[dh];
+      headerText.textContent = dayNames[i];
       svg.appendChild(headerText);
-    }
 
-    // Draw cells
-    for (var day = 1; day <= daysInMonth; day++) {
-      var cellDate = new Date(year, month - 1, day);
-      var dayOfWeek = cellDate.getDay();
-      var weekRow = Math.floor((day - 1 + firstDayOfWeek) / 7);
-      var dateStr = year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+      // Cell
       var isFuture = dateStr > todayStr;
+      var level = isFuture ? 0 : this.getColorLevel(dayData.totalSeconds, maxValue);
+      var color = isFuture ? "#f9f9f9" : colors[level];
 
-      var x = dayOfWeek * totalCellSize + 25;
-      var y = weekRow * totalCellSize + 24;
-      var cellW = this.CELL_SIZE;
-      var cellH = this.CELL_SIZE;
+      var rect = doc.createElementNS(svgNS, "rect");
+      rect.setAttribute("x", String(x));
+      rect.setAttribute("y", "22");
+      rect.setAttribute("width", String(this.CELL_SIZE));
+      rect.setAttribute("height", String(this.CELL_SIZE));
+      rect.setAttribute("rx", "3");
+      rect.setAttribute("ry", "3");
+      rect.setAttribute("fill", color);
 
-      // Background rect (empty / future)
-      var bgRect = doc.createElementNS(svgNS, "rect");
-      bgRect.setAttribute("x", String(x));
-      bgRect.setAttribute("y", String(y));
-      bgRect.setAttribute("width", String(cellW));
-      bgRect.setAttribute("height", String(cellH));
-      bgRect.setAttribute("rx", "3");
-      bgRect.setAttribute("ry", "3");
-      bgRect.setAttribute("fill", isFuture ? "#f9f9f9" : "#ebedf0");
-      svg.appendChild(bgRect);
-
-      if (!isFuture) {
-        // Find which members have data on this day
-        var activeMembers = [];
-        var tooltipParts = [dateStr];
-        for (var mi2 = 0; mi2 < memberList.length; mi2++) {
-          var mInfo = memberList[mi2];
-          var mDayData = groupData.members[mInfo.deviceId].stats[dateStr];
-          if (mDayData && mDayData.totalSeconds > 0) {
-            var mLevel = self.getColorLevel(mDayData.totalSeconds, memberMaxValues[mi2]);
-            activeMembers.push({ index: mi2, level: mLevel, seconds: mDayData.totalSeconds });
-            tooltipParts.push(mInfo.userName + ": " + self.formatDuration(mDayData.totalSeconds));
-          }
-        }
-
-        if (activeMembers.length > 0) {
-          // Use clipPath for rounded corners on the group of stripes
-          var clipId = "clip-" + day;
-          var clipPath = doc.createElementNS(svgNS, "clipPath");
-          clipPath.setAttribute("id", clipId);
-          var clipRect = doc.createElementNS(svgNS, "rect");
-          clipRect.setAttribute("x", String(x));
-          clipRect.setAttribute("y", String(y));
-          clipRect.setAttribute("width", String(cellW));
-          clipRect.setAttribute("height", String(cellH));
-          clipRect.setAttribute("rx", "3");
-          clipRect.setAttribute("ry", "3");
-          clipPath.appendChild(clipRect);
-          svg.appendChild(clipPath);
-
-          var stripeGroup = doc.createElementNS(svgNS, "g");
-          stripeGroup.setAttribute("clip-path", "url(#" + clipId + ")");
-
-          var stripeH = cellH / activeMembers.length;
-          for (var si2 = 0; si2 < activeMembers.length; si2++) {
-            var am = activeMembers[si2];
-            var stripeColor = memberColors[am.index][am.level];
-            var stripeRect = doc.createElementNS(svgNS, "rect");
-            stripeRect.setAttribute("x", String(x));
-            stripeRect.setAttribute("y", String(y + si2 * stripeH));
-            stripeRect.setAttribute("width", String(cellW));
-            stripeRect.setAttribute("height", String(stripeH + 0.5)); // slight overlap to avoid gaps
-            stripeRect.setAttribute("fill", stripeColor);
-            stripeGroup.appendChild(stripeRect);
-          }
-          svg.appendChild(stripeGroup);
-        }
-
-        // Tooltip
-        var tooltipRect = doc.createElementNS(svgNS, "rect");
-        tooltipRect.setAttribute("x", String(x));
-        tooltipRect.setAttribute("y", String(y));
-        tooltipRect.setAttribute("width", String(cellW));
-        tooltipRect.setAttribute("height", String(cellH));
-        tooltipRect.setAttribute("fill", "transparent");
-        tooltipRect.style.cursor = "pointer";
-        var titleEl = doc.createElementNS(svgNS, "title");
-        titleEl.textContent = tooltipParts.join("\n");
-        tooltipRect.appendChild(titleEl);
-        svg.appendChild(tooltipRect);
-      }
-
-      // Today highlight
       if (dateStr === todayStr) {
-        var todayRect = doc.createElementNS(svgNS, "rect");
-        todayRect.setAttribute("x", String(x));
-        todayRect.setAttribute("y", String(y));
-        todayRect.setAttribute("width", String(cellW));
-        todayRect.setAttribute("height", String(cellH));
-        todayRect.setAttribute("rx", "3");
-        todayRect.setAttribute("ry", "3");
-        todayRect.setAttribute("fill", "none");
-        todayRect.setAttribute("stroke", "#1f6feb");
-        todayRect.setAttribute("stroke-width", "2");
-        svg.appendChild(todayRect);
+        rect.setAttribute("stroke", "#1f6feb");
+        rect.setAttribute("stroke-width", "2");
       }
 
-      // Day number text
-      var dayText = doc.createElementNS(svgNS, "text");
-      dayText.setAttribute("x", String(x + cellW / 2));
-      dayText.setAttribute("y", String(y + cellH / 2 + 5));
-      dayText.setAttribute("font-size", "12");
-      dayText.setAttribute("text-anchor", "middle");
-      // Determine text color based on whether there are active members with high levels
-      var hasHighLevel = false;
       if (!isFuture) {
-        for (var mi3 = 0; mi3 < memberList.length; mi3++) {
-          var mDayData3 = groupData.members[memberList[mi3].deviceId].stats[dateStr];
-          if (mDayData3 && mDayData3.totalSeconds > 0) {
-            var mLvl = self.getColorLevel(mDayData3.totalSeconds, memberMaxValues[mi3]);
-            if (mLvl >= 3) { hasHighLevel = true; break; }
-          }
-        }
+        rect.style.cursor = "pointer";
+        var tooltipText = dateStr + " | " + this.formatDuration(dayData.totalSeconds);
+        var titleEl = doc.createElementNS(svgNS, "title");
+        titleEl.textContent = tooltipText;
+        rect.appendChild(titleEl);
       }
-      dayText.setAttribute("fill", hasHighLevel ? "#ffffff" : "#57606a");
-      dayText.textContent = String(day);
+
+      svg.appendChild(rect);
+
+      // Day number
+      var dayText = doc.createElementNS(svgNS, "text");
+      dayText.setAttribute("x", String(x + this.CELL_SIZE / 2));
+      dayText.setAttribute("y", String(22 + this.CELL_SIZE / 2 + 5));
+      dayText.setAttribute("font-size", "12");
+      dayText.setAttribute("fill", (level >= 3 && !isFuture) ? "#ffffff" : "#57606a");
+      dayText.setAttribute("text-anchor", "middle");
+      dayText.textContent = String(cellDate.getDate());
       svg.appendChild(dayText);
     }
 
-    // --- Member legend (below the calendar) ---
-    var legendY = svgHeight - 5;
-    var legendX = 25;
-    for (var li = 0; li < memberList.length; li++) {
-      var mColors = memberColors[li];
-      var legendRect = doc.createElementNS(svgNS, "rect");
-      legendRect.setAttribute("x", String(legendX));
-      legendRect.setAttribute("y", String(legendY - 12));
-      legendRect.setAttribute("width", "12");
-      legendRect.setAttribute("height", "12");
-      legendRect.setAttribute("rx", "2");
-      legendRect.setAttribute("fill", mColors[4]); // Use the darkest shade
-      svg.appendChild(legendRect);
-
-      var legendText = doc.createElementNS(svgNS, "text");
-      legendText.setAttribute("x", String(legendX + 16));
-      legendText.setAttribute("y", String(legendY));
-      legendText.setAttribute("font-size", "11");
-      legendText.setAttribute("fill", "#57606a");
-      legendText.textContent = memberList[li].userName + (memberList[li].isMe ? " (You)" : "");
-      svg.appendChild(legendText);
-
-      // Estimate text width for spacing
-      legendX += 16 + (memberList[li].userName.length + (memberList[li].isMe ? 6 : 0)) * 7 + 12;
-    }
-
-    // Wrap SVG
     var svgWrapper = doc.createElement("div");
-    svgWrapper.style.cssText = "width:100%; margin-bottom:4px;";
+    svgWrapper.style.cssText = "width:100%; margin-bottom:2px;";
     svgWrapper.appendChild(svg);
     fragment.appendChild(svgWrapper);
+
+    // Legend as HTML
+    fragment.appendChild(this._buildLegendHTML(doc, colorScheme));
 
     return fragment;
   }
@@ -1371,27 +1363,27 @@ class StyleDataImporter {
 
           if (!noteData.readingTime || !noteData.readingTime.data) continue;
 
-          var readingTime = noteData.readingTime;
-          var totalSeconds = 0;
-          for (var pageIndex in readingTime.data) {
-            if (!readingTime.data.hasOwnProperty(pageIndex)) continue;
-            totalSeconds += parseFloat(readingTime.data[pageIndex]) || 0;
+          var readingTime2 = noteData.readingTime;
+          var totalSeconds2 = 0;
+          for (var pageIndex2 in readingTime2.data) {
+            if (!readingTime2.data.hasOwnProperty(pageIndex2)) continue;
+            totalSeconds2 += parseFloat(readingTime2.data[pageIndex2]) || 0;
           }
 
-          if (totalSeconds <= 0) continue;
+          if (totalSeconds2 <= 0) continue;
 
-          var title = "Imported Item";
+          var title2 = "Imported Item";
           try {
-            var zoteroItem = Zotero.Items.getByLibraryAndKey(1, targetKey);
-            if (zoteroItem) {
-              title = zoteroItem.getField("title") || "Untitled";
+            var zoteroItem2 = Zotero.Items.getByLibraryAndKey(1, targetKey);
+            if (zoteroItem2) {
+              title2 = zoteroItem2.getField("title") || "Untitled";
             }
           } catch (e) {}
 
-          var today = this.storage.getToday();
-          this.storage.addReadingTimeToDate(today, targetKey, title, Math.round(totalSeconds));
+          var today2 = this.storage.getToday();
+          this.storage.addReadingTimeToDate(today2, targetKey, title2, Math.round(totalSeconds2));
           importCount++;
-          totalImportedSeconds += totalSeconds;
+          totalImportedSeconds += totalSeconds2;
         } catch (e) {
           Zotero.debug("[ReadingHeatmap:Import] Note parse error: " + e);
         }
@@ -1431,8 +1423,11 @@ Zotero.ReadingHeatmap = {
   _panelBodies: new Set(),
   _currentYear: null,
   _currentMonth: null,
-  _viewMode: "personal",      // "personal" or "group"
-  _selectedGroupId: null,      // Currently selected group ID for group view
+  _viewMode: "personal",       // "personal" or "group"
+  _selectedGroupId: null,
+  _calendarMode: "month",      // "month" or "week"  (NEW in v0.6.0)
+  _showSummary: true,          // toggle summary bar  (NEW in v0.6.0)
+  _weekRefDate: null,          // reference date for week view navigation
 
   async init(id, version, rootURI) {
     this.id = id;
@@ -1442,6 +1437,7 @@ Zotero.ReadingHeatmap = {
     var now = new Date();
     this._currentYear = now.getFullYear();
     this._currentMonth = now.getMonth() + 1;
+    this._weekRefDate = new Date(now);
 
     // Init storage
     try {
@@ -1550,7 +1546,7 @@ Zotero.ReadingHeatmap = {
             body.removeChild(body.firstChild);
           }
 
-          await self._renderMonthView(doc, body);
+          await self._renderMainView(doc, body);
 
           Zotero.debug("[ReadingHeatmap] onAsyncRender completed successfully");
         } catch (e) {
@@ -1570,9 +1566,10 @@ Zotero.ReadingHeatmap = {
   },
 
   /**
-   * Render the monthly view with navigation and view toggle.
+   * Main render entry point for the side panel.
+   * Renders navigation, calendar mode toggle, summary toggle, heatmap, and view toggle.
    */
-  async _renderMonthView(doc, body) {
+  async _renderMainView(doc, body) {
     var self = this;
     var year = this._currentYear;
     var month = this._currentMonth;
@@ -1580,7 +1577,66 @@ Zotero.ReadingHeatmap = {
     var months = ["January","February","March","April","May","June",
                   "July","August","September","October","November","December"];
 
-    // --- Navigation header ---
+    // === Top toolbar: Calendar mode toggle (Week/Month) + Summary toggle ===
+    var toolbarDiv = doc.createElement("div");
+    toolbarDiv.style.cssText = "display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; width:100%; box-sizing:border-box;";
+
+    // Left: Week / Month toggle
+    var modeDiv = doc.createElement("div");
+    modeDiv.style.cssText = "display:flex; gap:2px; border:1px solid #d0d7de; border-radius:6px; overflow:hidden;";
+
+    var weekBtn = doc.createElement("button");
+    weekBtn.textContent = "Week";
+    weekBtn.style.cssText = "padding:3px 10px; border:none; font-size:11px; cursor:pointer; " +
+      (this._calendarMode === "week"
+        ? "background:#0969da; color:#fff; font-weight:600;"
+        : "background:#f6f8fa; color:#24292f;");
+    weekBtn.addEventListener("click", function() {
+      if (self._calendarMode !== "week") {
+        self._calendarMode = "week";
+        // Set week ref date to a date in the current viewed month
+        self._weekRefDate = new Date(self._currentYear, self._currentMonth - 1,
+          Math.min(new Date().getDate(), new Date(self._currentYear, self._currentMonth, 0).getDate()));
+        var now = new Date();
+        if (self._weekRefDate > now) self._weekRefDate = now;
+        self._refreshPanel();
+      }
+    });
+    modeDiv.appendChild(weekBtn);
+
+    var monthBtn = doc.createElement("button");
+    monthBtn.textContent = "Month";
+    monthBtn.style.cssText = "padding:3px 10px; border:none; font-size:11px; cursor:pointer; " +
+      (this._calendarMode === "month"
+        ? "background:#0969da; color:#fff; font-weight:600;"
+        : "background:#f6f8fa; color:#24292f;");
+    monthBtn.addEventListener("click", function() {
+      if (self._calendarMode !== "month") {
+        self._calendarMode = "month";
+        // Sync month from weekRefDate
+        self._currentYear = self._weekRefDate.getFullYear();
+        self._currentMonth = self._weekRefDate.getMonth() + 1;
+        self._refreshPanel();
+      }
+    });
+    modeDiv.appendChild(monthBtn);
+
+    toolbarDiv.appendChild(modeDiv);
+
+    // Right: Summary toggle button
+    var summaryBtn = doc.createElement("button");
+    summaryBtn.textContent = this._showSummary ? "Summary \u25B2" : "Summary \u25BC";
+    summaryBtn.style.cssText = "padding:3px 10px; border:1px solid #d0d7de; border-radius:6px; font-size:11px; cursor:pointer; " +
+      (this._showSummary ? "background:#ddf4ff; color:#0969da;" : "background:#f6f8fa; color:#57606a;");
+    summaryBtn.addEventListener("click", function() {
+      self._showSummary = !self._showSummary;
+      self._refreshPanel();
+    });
+    toolbarDiv.appendChild(summaryBtn);
+
+    body.appendChild(toolbarDiv);
+
+    // === Navigation header ===
     var navDiv = doc.createElement("div");
     navDiv.style.cssText = "display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0; width:100%; box-sizing:border-box;";
 
@@ -1588,13 +1644,31 @@ Zotero.ReadingHeatmap = {
     prevBtn.style.cssText = "padding:2px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#24292f; cursor:pointer; font-size:14px; font-weight:bold;";
     prevBtn.textContent = "\u25C0";
     prevBtn.addEventListener("click", function() {
-      self._navigateMonth(-1);
+      if (self._calendarMode === "week") {
+        self._navigateWeek(-1);
+      } else {
+        self._navigateMonth(-1);
+      }
     });
     navDiv.appendChild(prevBtn);
 
+    // Title: depends on calendar mode
     var titleSpan = doc.createElement("span");
     titleSpan.style.cssText = "font-size:14px; font-weight:600; color:#24292f;";
-    titleSpan.textContent = months[month - 1] + " " + year;
+    if (this._calendarMode === "week") {
+      // Show week range
+      var refDay = this._weekRefDate.getDay();
+      var weekStart = new Date(this._weekRefDate);
+      weekStart.setDate(weekStart.getDate() - refDay);
+      var weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 6);
+      var fmt = function(d) {
+        return (d.getMonth() + 1) + "/" + d.getDate();
+      };
+      titleSpan.textContent = fmt(weekStart) + " - " + fmt(weekEnd) + ", " + weekEnd.getFullYear();
+    } else {
+      titleSpan.textContent = months[month - 1] + " " + year;
+    }
     navDiv.appendChild(titleSpan);
 
     var nextBtn = doc.createElement("button");
@@ -1602,26 +1676,43 @@ Zotero.ReadingHeatmap = {
     nextBtn.textContent = "\u25B6";
 
     var now = new Date();
-    if (year === now.getFullYear() && month === now.getMonth() + 1) {
+    var isAtCurrent = false;
+    if (this._calendarMode === "week") {
+      // Check if current week contains today
+      var refDay2 = this._weekRefDate.getDay();
+      var ws = new Date(this._weekRefDate);
+      ws.setDate(ws.getDate() - refDay2);
+      var we = new Date(ws);
+      we.setDate(we.getDate() + 6);
+      isAtCurrent = (now >= ws && now <= we);
+    } else {
+      isAtCurrent = (year === now.getFullYear() && month === now.getMonth() + 1);
+    }
+
+    if (isAtCurrent) {
       nextBtn.style.opacity = "0.3";
       nextBtn.style.cursor = "default";
     } else {
       nextBtn.addEventListener("click", function() {
-        self._navigateMonth(1);
+        if (self._calendarMode === "week") {
+          self._navigateWeek(1);
+        } else {
+          self._navigateMonth(1);
+        }
       });
     }
     navDiv.appendChild(nextBtn);
 
     body.appendChild(navDiv);
 
-    // --- Render based on view mode ---
+    // === Render heatmap based on view mode and calendar mode ===
     if (this._viewMode === "group" && this._selectedGroupId) {
       await this._renderGroupView(doc, body, year, month);
     } else {
       this._renderPersonalView(doc, body, year, month);
     }
 
-    // --- Bottom: View toggle button ---
+    // === Bottom: View toggle button ===
     var groups = this.storage.getGroups();
     var hasGroups = Object.keys(groups).length > 0;
 
@@ -1645,7 +1736,6 @@ Zotero.ReadingHeatmap = {
       }
       bottomDiv.appendChild(toggleBtn);
     } else {
-      // No groups: show a hint
       var hintSpan = doc.createElement("span");
       hintSpan.style.cssText = "font-size:11px; color:#8b949e;";
       hintSpan.textContent = "Join a group in Settings to enable Group View";
@@ -1656,24 +1746,26 @@ Zotero.ReadingHeatmap = {
   },
 
   _renderPersonalView(doc, body, year, month) {
-    var stats = this.storage.getMonthlyStats(year, month);
-    var summary = this.storage.getMonthlySummary(year, month);
-
-    // Use user's custom color if set
-    var colorScheme = "personal";
-    try {
-      var savedColor = Zotero.Prefs.get("extensions.reading-heatmap.user.color", true) || "";
-      if (savedColor && /^#[0-9A-Fa-f]{6}$/.test(savedColor)) {
-        colorScheme = savedColor;
-      }
-    } catch (e) {}
-
-    var fragment = this.renderer.buildMonthlyHeatmapDOM(doc, stats, summary, year, month, colorScheme);
-    body.appendChild(fragment);
+    if (this._calendarMode === "week") {
+      var stats = this.storage.getWeeklyStats(this._weekRefDate);
+      var summary = this.storage.computeSimpleSummary(stats);
+      var fragment = this.renderer.buildWeeklyHeatmapDOM(doc, stats, summary, this._weekRefDate, this.storage.getUserColor(), null, this._showSummary);
+      body.appendChild(fragment);
+    } else {
+      var stats2 = this.storage.getMonthlyStats(year, month);
+      var summary2 = this.storage.getMonthlySummary(year, month);
+      var fragment2 = this.renderer.buildMonthlyHeatmapDOM(doc, stats2, summary2, year, month, this.storage.getUserColor(), null, this._showSummary);
+      body.appendChild(fragment2);
+    }
   },
 
   async _renderGroupView(doc, body, year, month) {
-    var groupData = await this.sync.getGroupMonthlyData(this._selectedGroupId, year, month);
+    var groupData;
+    if (this._calendarMode === "week") {
+      groupData = await this.sync.getGroupWeeklyData(this._selectedGroupId, this._weekRefDate);
+    } else {
+      groupData = await this.sync.getGroupMonthlyData(this._selectedGroupId, year, month);
+    }
 
     if (!groupData) {
       var noDataDiv = doc.createElement("div");
@@ -1693,38 +1785,49 @@ Zotero.ReadingHeatmap = {
     groupHeader.textContent = "\uD83D\uDC65 " + groupName;
     body.appendChild(groupHeader);
 
-    // Build member list with color assignments
-    var otherColorKeys = ["user1", "user2", "user3"];
+    // Render aggregated heatmap
+    var aggSummary = this.storage.computeSimpleSummary(groupData.aggregated);
+    var aggFragment;
+    if (this._calendarMode === "week") {
+      aggFragment = this.renderer.buildWeeklyHeatmapDOM(
+        doc, groupData.aggregated, aggSummary, this._weekRefDate, "personal", "All Members (Combined)", this._showSummary
+      );
+    } else {
+      aggFragment = this.renderer.buildMonthlyHeatmapDOM(
+        doc, groupData.aggregated, aggSummary, year, month, "personal", "All Members (Combined)", this._showSummary
+      );
+    }
+    body.appendChild(aggFragment);
+
+    // Render individual member heatmaps
+    var colorKeys = ["user1", "user2", "user3"];
     var colorIndex = 0;
     var myDeviceId = this.storage.getDeviceId();
-    var memberList = [];
-
-    // Get user's custom color from preferences
-    var myColor = "personal";
-    try {
-      var savedColor = Zotero.Prefs.get("extensions.reading-heatmap.user.color", true) || "";
-      if (savedColor && /^#[0-9A-Fa-f]{6}$/.test(savedColor)) {
-        myColor = savedColor;
-      }
-    } catch (e) {}
 
     for (var deviceId in groupData.members) {
       var member = groupData.members[deviceId];
       var isMe = (deviceId === myDeviceId);
-      memberList.push({
-        deviceId: deviceId,
-        userName: member.userName,
-        colorScheme: isMe ? myColor : otherColorKeys[colorIndex % otherColorKeys.length],
-        isMe: isMe,
-      });
+      var memberLabel = member.userName + (isMe ? " (You)" : "");
+      var memberColor = isMe ? this.storage.getUserColor() : colorKeys[colorIndex % colorKeys.length];
       if (!isMe) colorIndex++;
-    }
 
-    // Render single overlay heatmap with all members
-    var overlayFragment = this.renderer.buildGroupOverlayHeatmapDOM(
-      doc, groupData, memberList, year, month
-    );
-    body.appendChild(overlayFragment);
+      var memberSummary = this.storage.computeSimpleSummary(member.stats);
+      var memberFragment;
+      if (this._calendarMode === "week") {
+        memberFragment = this.renderer.buildWeeklyHeatmapDOM(
+          doc, member.stats, memberSummary, this._weekRefDate, memberColor, memberLabel, this._showSummary
+        );
+      } else {
+        memberFragment = this.renderer.buildMonthlyHeatmapDOM(
+          doc, member.stats, memberSummary, year, month, memberColor, memberLabel, this._showSummary
+        );
+      }
+
+      var sep = doc.createElement("hr");
+      sep.style.cssText = "border:none; border-top:1px solid #d0d7de; margin:8px 0;";
+      body.appendChild(sep);
+      body.appendChild(memberFragment);
+    }
   },
 
   _switchToGroupView() {
@@ -1733,12 +1836,10 @@ Zotero.ReadingHeatmap = {
     if (groupIds.length === 0) return;
 
     if (groupIds.length === 1) {
-      // Only one group, switch directly
       this._viewMode = "group";
       this._selectedGroupId = groupIds[0];
       this._refreshPanel();
     } else {
-      // Multiple groups: show a selection dialog
       var win = Zotero.getMainWindow();
       if (!win) return;
       var groupNames = groupIds.map(function(id) { return groups[id].name; });
@@ -1784,6 +1885,28 @@ Zotero.ReadingHeatmap = {
     this._refreshPanel();
   },
 
+  _navigateWeek(direction) {
+    var newRef = new Date(this._weekRefDate);
+    newRef.setDate(newRef.getDate() + direction * 7);
+
+    var now = new Date();
+    // Don't navigate past current week
+    var nowDay = now.getDay();
+    var endOfCurrentWeek = new Date(now);
+    endOfCurrentWeek.setDate(endOfCurrentWeek.getDate() + (6 - nowDay));
+
+    if (newRef > endOfCurrentWeek) {
+      newRef = new Date(now);
+    }
+
+    this._weekRefDate = newRef;
+    // Keep month/year in sync
+    this._currentYear = newRef.getFullYear();
+    this._currentMonth = newRef.getMonth() + 1;
+
+    this._refreshPanel();
+  },
+
   _registerPrefsPane() {
     Zotero.PreferencePanes.register({
       pluginID: "reading-heatmap@zotero-plugin.com",
@@ -1802,7 +1925,7 @@ Zotero.ReadingHeatmap = {
         while (body.firstChild) {
           body.removeChild(body.firstChild);
         }
-        self._renderMonthView(doc, body);
+        self._renderMainView(doc, body);
       } catch (e) {
         Zotero.debug("[ReadingHeatmap] Refresh error: " + e);
       }
@@ -1812,7 +1935,6 @@ Zotero.ReadingHeatmap = {
   _showImportDialog() {
     var win = Zotero.getMainWindow();
     if (!win) return;
-    var self = this;
 
     var prompts = Services.prompt;
     var selected = {};

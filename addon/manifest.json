@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "Reading Heatmap",
-  "version": "0.5.1",
-  "description": "Track your reading activity in Zotero and visualize it as a GitHub-style heatmap. Monthly view, group sync, and Zotero Style data import.",
+  "version": "0.6.0",
+  "description": "Track your reading activity in Zotero and visualize it as a GitHub-style heatmap. Week/month view toggle, summary toggle, group sync with responsive legend, and Zotero Style data import.",
   "author": "Manus AI",
   "homepage_url": "https://github.com/zotero-reading-heatmap",
   "icons": {
