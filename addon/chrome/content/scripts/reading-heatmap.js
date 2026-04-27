@@ -1972,11 +1972,11 @@ Zotero.ReadingHeatmap = {
       paneID: "reading-heatmap-panel",
       pluginID: "reading-heatmap@zotero-plugin.com",
       header: {
-        icon: "chrome://reading-heatmap/content/icons/favicon.png",
+        icon: "chrome://reading-heatmap/content/icons/icon32.png",
         l10nID: "reading-heatmap-section-header",
       },
       sidenav: {
-        icon: "chrome://reading-heatmap/content/icons/favicon.png",
+        icon: "chrome://reading-heatmap/content/icons/icon32.png",
         l10nID: "reading-heatmap-sidenav",
       },
       onInit: function(props) {
@@ -2461,7 +2461,7 @@ Zotero.ReadingHeatmap = {
       src: this.rootURI + "chrome/content/preferences/preferences.xhtml",
       scripts: [this.rootURI + "chrome/content/preferences/prefs.js"],
       label: "Reading Heatmap",
-      image: "chrome://reading-heatmap/content/icons/favicon.png",
+      image: "chrome://reading-heatmap/content/icons/icon32.png",
     });
   },
 
