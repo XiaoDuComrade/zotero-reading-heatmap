@@ -97,6 +97,13 @@ The main plugin script (`reading-heatmap.js`) is organized into six sections:
 
 ## Changelog
 
+### v0.6.1
+
+- Added Combined/Overlay toggle in group view: switch between aggregated single-color heatmap and multi-color stripe overlay where each day cell shows per-member colored stripes
+- Added Members collapse/expand button to hide or show individual member heatmaps below the main group heatmap
+- Overlay mode supports both monthly and weekly calendar views
+- Member color legend in overlay mode uses HTML flex-wrap for responsive layout
+
 ### v0.6.0
 
 - Added week/month calendar view toggle in the side panel toolbar

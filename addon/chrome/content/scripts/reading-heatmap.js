@@ -1,11 +1,16 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.6.0
+ * Reading Heatmap - Main Plugin Script v0.6.1
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
  * instead of innerHTML, because Zotero 8's ItemPane section body strips HTML tags
  * when innerHTML is used.
+ * 
+ * Changes in v0.6.1:
+ * - Added Combined/Overlay toggle in group view to switch between aggregated
+ *   single-color heatmap and multi-color stripe overlay mode
+ * - Added Members collapse/expand button to hide/show individual member heatmaps
  * 
  * Changes in v0.6.0:
  * - Added week/month calendar view toggle in the side panel
@@ -1259,6 +1264,464 @@ class HeatmapRenderer {
 
     return fragment;
   }
+
+  /**
+   * Resolve a color scheme to a 5-level color array.
+   */
+  _resolveColors(colorScheme) {
+    if (Array.isArray(colorScheme)) return colorScheme;
+    if (typeof colorScheme === "string" && /^#[0-9A-Fa-f]{6}$/.test(colorScheme)) {
+      return this.getColorScale(colorScheme);
+    }
+    return this.COLOR_SCALES[colorScheme] || this.COLOR_SCALES.personal;
+  }
+
+  /**
+   * Build a member color legend as HTML flex-wrap (for overlay mode).
+   */
+  _buildMemberLegendHTML(doc, memberList, memberColors) {
+    var legendDiv = doc.createElement("div");
+    legendDiv.style.cssText = "display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:6px; margin-bottom:4px; font-size:11px; color:#57606a;";
+    for (var i = 0; i < memberList.length; i++) {
+      var item = doc.createElement("span");
+      item.style.cssText = "display:inline-flex; align-items:center; gap:3px;";
+      var box = doc.createElement("span");
+      box.style.cssText = "display:inline-block; width:12px; height:12px; border-radius:2px; background:" + memberColors[i][4] + ";";
+      item.appendChild(box);
+      var nameSpan = doc.createElement("span");
+      nameSpan.textContent = memberList[i].userName + (memberList[i].isMe ? " (You)" : "");
+      item.appendChild(nameSpan);
+      legendDiv.appendChild(item);
+    }
+    return legendDiv;
+  }
+
+  /**
+   * Build a single overlay heatmap for Group View (monthly).
+   * Each cell is split horizontally into stripes for members who have data on that day.
+   */
+  buildGroupOverlayMonthlyDOM(doc, groupData, memberList, year, month, showSummary) {
+    var self = this;
+    var svgNS = "http://www.w3.org/2000/svg";
+    var fragment = doc.createDocumentFragment();
+
+    // --- Summary bar (aggregated) ---
+    if (showSummary !== false) {
+      var aggSummary = { totalSeconds: 0, activeDays: 0, currentStreak: 0, maxStreak: 0 };
+      var daysInMonth = new Date(year, month, 0).getDate();
+      var today = new Date();
+      var todayStr = this.formatDate(today);
+      var tempStreak = 0;
+      for (var d = 1; d <= daysInMonth; d++) {
+        var ds = year + "-" + String(month).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+        if (ds > todayStr) break;
+        var aggDay = groupData.aggregated[ds];
+        if (aggDay && aggDay.totalSeconds > 0) {
+          aggSummary.totalSeconds += aggDay.totalSeconds;
+          aggSummary.activeDays++;
+          tempStreak++;
+          if (tempStreak > aggSummary.maxStreak) aggSummary.maxStreak = tempStreak;
+        } else {
+          tempStreak = 0;
+        }
+      }
+      var endDay = (year === today.getFullYear() && month === today.getMonth() + 1) ? today.getDate() : daysInMonth;
+      for (var d2 = endDay; d2 >= 1; d2--) {
+        var ds2 = year + "-" + String(month).padStart(2, "0") + "-" + String(d2).padStart(2, "0");
+        var aggDay2 = groupData.aggregated[ds2];
+        if (aggDay2 && aggDay2.totalSeconds > 0) { aggSummary.currentStreak++; } else { break; }
+      }
+      fragment.appendChild(this._buildSummaryBar(doc, aggSummary));
+    }
+
+    // --- Prepare per-member color arrays and max values ---
+    var memberColors = [];
+    var memberMaxValues = [];
+    var daysInMonth2 = new Date(year, month, 0).getDate();
+    for (var mi = 0; mi < memberList.length; mi++) {
+      memberColors.push(this._resolveColors(memberList[mi].colorScheme));
+      var mMax = 0;
+      var mStats = groupData.members[memberList[mi].deviceId].stats;
+      for (var mKey in mStats) {
+        if (mStats[mKey].totalSeconds > mMax) mMax = mStats[mKey].totalSeconds;
+      }
+      memberMaxValues.push(mMax || 1);
+    }
+
+    // --- Calendar grid ---
+    var firstDayOfWeek = new Date(year, month - 1, 1).getDay();
+    var totalCellSize = this.CELL_SIZE + this.CELL_GAP;
+    var dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    var cols = 7;
+    var rows = Math.ceil((daysInMonth2 + firstDayOfWeek) / 7);
+    var svgWidth = cols * totalCellSize + 50;
+    var svgHeight = rows * totalCellSize + 50;
+    var today2 = new Date();
+    var todayStr2 = this.formatDate(today2);
+
+    var svg = doc.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
+    svg.setAttribute("width", "100%");
+    svg.removeAttribute("height");
+    svg.style.cssText = "display:block; width:100%;";
+
+    // Day-of-week headers
+    for (var dh = 0; dh < 7; dh++) {
+      var headerText = doc.createElementNS(svgNS, "text");
+      headerText.setAttribute("x", String(dh * totalCellSize + 25 + this.CELL_SIZE / 2));
+      headerText.setAttribute("y", "16");
+      headerText.setAttribute("font-size", "12");
+      headerText.setAttribute("fill", "#57606a");
+      headerText.setAttribute("text-anchor", "middle");
+      headerText.textContent = dayNames[dh];
+      svg.appendChild(headerText);
+    }
+
+    // Draw cells
+    for (var day = 1; day <= daysInMonth2; day++) {
+      var cellDate = new Date(year, month - 1, day);
+      var dayOfWeek = cellDate.getDay();
+      var weekRow = Math.floor((day - 1 + firstDayOfWeek) / 7);
+      var dateStr = year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+      var isFuture = dateStr > todayStr2;
+
+      var x = dayOfWeek * totalCellSize + 25;
+      var y = weekRow * totalCellSize + 24;
+      var cellW = this.CELL_SIZE;
+      var cellH = this.CELL_SIZE;
+
+      // Background rect
+      var bgRect = doc.createElementNS(svgNS, "rect");
+      bgRect.setAttribute("x", String(x));
+      bgRect.setAttribute("y", String(y));
+      bgRect.setAttribute("width", String(cellW));
+      bgRect.setAttribute("height", String(cellH));
+      bgRect.setAttribute("rx", "3");
+      bgRect.setAttribute("ry", "3");
+      bgRect.setAttribute("fill", isFuture ? "#f9f9f9" : "#ebedf0");
+      svg.appendChild(bgRect);
+
+      if (!isFuture) {
+        var activeMembers = [];
+        var tooltipParts = [dateStr];
+        for (var mi2 = 0; mi2 < memberList.length; mi2++) {
+          var mInfo = memberList[mi2];
+          var mDayData = groupData.members[mInfo.deviceId].stats[dateStr];
+          if (mDayData && mDayData.totalSeconds > 0) {
+            var mLevel = self.getColorLevel(mDayData.totalSeconds, memberMaxValues[mi2]);
+            activeMembers.push({ index: mi2, level: mLevel, seconds: mDayData.totalSeconds });
+            tooltipParts.push(mInfo.userName + ": " + self.formatDuration(mDayData.totalSeconds));
+          }
+        }
+
+        if (activeMembers.length > 0) {
+          var clipId = "clip-" + day;
+          var clipPath = doc.createElementNS(svgNS, "clipPath");
+          clipPath.setAttribute("id", clipId);
+          var clipRect = doc.createElementNS(svgNS, "rect");
+          clipRect.setAttribute("x", String(x));
+          clipRect.setAttribute("y", String(y));
+          clipRect.setAttribute("width", String(cellW));
+          clipRect.setAttribute("height", String(cellH));
+          clipRect.setAttribute("rx", "3");
+          clipRect.setAttribute("ry", "3");
+          clipPath.appendChild(clipRect);
+          svg.appendChild(clipPath);
+
+          var stripeGroup = doc.createElementNS(svgNS, "g");
+          stripeGroup.setAttribute("clip-path", "url(#" + clipId + ")");
+
+          var stripeH = cellH / activeMembers.length;
+          for (var si2 = 0; si2 < activeMembers.length; si2++) {
+            var am = activeMembers[si2];
+            var stripeColor = memberColors[am.index][am.level];
+            var stripeRect = doc.createElementNS(svgNS, "rect");
+            stripeRect.setAttribute("x", String(x));
+            stripeRect.setAttribute("y", String(y + si2 * stripeH));
+            stripeRect.setAttribute("width", String(cellW));
+            stripeRect.setAttribute("height", String(stripeH + 0.5));
+            stripeRect.setAttribute("fill", stripeColor);
+            stripeGroup.appendChild(stripeRect);
+          }
+          svg.appendChild(stripeGroup);
+        }
+
+        // Tooltip
+        var tooltipRect = doc.createElementNS(svgNS, "rect");
+        tooltipRect.setAttribute("x", String(x));
+        tooltipRect.setAttribute("y", String(y));
+        tooltipRect.setAttribute("width", String(cellW));
+        tooltipRect.setAttribute("height", String(cellH));
+        tooltipRect.setAttribute("fill", "transparent");
+        tooltipRect.style.cursor = "pointer";
+        var titleEl = doc.createElementNS(svgNS, "title");
+        titleEl.textContent = tooltipParts.join("\n");
+        tooltipRect.appendChild(titleEl);
+        svg.appendChild(tooltipRect);
+      }
+
+      // Today highlight
+      if (dateStr === todayStr2) {
+        var todayRect = doc.createElementNS(svgNS, "rect");
+        todayRect.setAttribute("x", String(x));
+        todayRect.setAttribute("y", String(y));
+        todayRect.setAttribute("width", String(cellW));
+        todayRect.setAttribute("height", String(cellH));
+        todayRect.setAttribute("rx", "3");
+        todayRect.setAttribute("ry", "3");
+        todayRect.setAttribute("fill", "none");
+        todayRect.setAttribute("stroke", "#1f6feb");
+        todayRect.setAttribute("stroke-width", "2");
+        svg.appendChild(todayRect);
+      }
+
+      // Day number text
+      var dayText = doc.createElementNS(svgNS, "text");
+      dayText.setAttribute("x", String(x + cellW / 2));
+      dayText.setAttribute("y", String(y + cellH / 2 + 5));
+      dayText.setAttribute("font-size", "12");
+      dayText.setAttribute("text-anchor", "middle");
+      var hasHighLevel = false;
+      if (!isFuture) {
+        for (var mi3 = 0; mi3 < memberList.length; mi3++) {
+          var mDayData3 = groupData.members[memberList[mi3].deviceId].stats[dateStr];
+          if (mDayData3 && mDayData3.totalSeconds > 0) {
+            var mLvl = self.getColorLevel(mDayData3.totalSeconds, memberMaxValues[mi3]);
+            if (mLvl >= 3) { hasHighLevel = true; break; }
+          }
+        }
+      }
+      dayText.setAttribute("fill", hasHighLevel ? "#ffffff" : "#57606a");
+      dayText.textContent = String(day);
+      svg.appendChild(dayText);
+    }
+
+    // Wrap SVG
+    var svgWrapper = doc.createElement("div");
+    svgWrapper.style.cssText = "width:100%; margin-bottom:4px;";
+    svgWrapper.appendChild(svg);
+    fragment.appendChild(svgWrapper);
+
+    // Member legend (HTML flex-wrap)
+    fragment.appendChild(this._buildMemberLegendHTML(doc, memberList, memberColors));
+
+    return fragment;
+  }
+
+  /**
+   * Build a single overlay heatmap for Group View (weekly).
+   * Each cell is split horizontally into stripes for members who have data on that day.
+   */
+  buildGroupOverlayWeeklyDOM(doc, groupData, memberList, refDate, showSummary) {
+    var self = this;
+    var svgNS = "http://www.w3.org/2000/svg";
+    var fragment = doc.createDocumentFragment();
+
+    // --- Summary bar (aggregated) ---
+    if (showSummary !== false) {
+      var aggSummary = this._computeWeekAggSummary(groupData.aggregated, refDate);
+      fragment.appendChild(this._buildSummaryBar(doc, aggSummary));
+    }
+
+    // --- Prepare per-member color arrays and max values ---
+    var memberColors = [];
+    var memberMaxValues = [];
+    for (var mi = 0; mi < memberList.length; mi++) {
+      memberColors.push(this._resolveColors(memberList[mi].colorScheme));
+      var mMax = 0;
+      var mStats = groupData.members[memberList[mi].deviceId].stats;
+      for (var mKey in mStats) {
+        if (mStats[mKey].totalSeconds > mMax) mMax = mStats[mKey].totalSeconds;
+      }
+      memberMaxValues.push(mMax || 1);
+    }
+
+    // --- Weekly grid ---
+    var totalCellSize = this.CELL_SIZE + this.CELL_GAP;
+    var dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    var svgWidth = 7 * totalCellSize + 50;
+    var svgHeight = totalCellSize + 30;
+    var today = new Date();
+    var todayStr = this.formatDate(today);
+
+    var dayOfRef = refDate.getDay();
+    var startOfWeek = new Date(refDate);
+    startOfWeek.setDate(startOfWeek.getDate() - dayOfRef);
+
+    var svg = doc.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
+    svg.setAttribute("width", "100%");
+    svg.removeAttribute("height");
+    svg.style.cssText = "display:block; width:100%;";
+
+    for (var i = 0; i < 7; i++) {
+      var cellDate = new Date(startOfWeek);
+      cellDate.setDate(cellDate.getDate() + i);
+      var dateStr = this.formatDate(cellDate);
+      var isFuture = dateStr > todayStr;
+      var x = i * totalCellSize + 25;
+
+      // Header
+      var headerText = doc.createElementNS(svgNS, "text");
+      headerText.setAttribute("x", String(x + this.CELL_SIZE / 2));
+      headerText.setAttribute("y", "14");
+      headerText.setAttribute("font-size", "12");
+      headerText.setAttribute("fill", "#57606a");
+      headerText.setAttribute("text-anchor", "middle");
+      headerText.textContent = dayNames[i];
+      svg.appendChild(headerText);
+
+      var cellW = this.CELL_SIZE;
+      var cellH = this.CELL_SIZE;
+      var yPos = 22;
+
+      // Background rect
+      var bgRect = doc.createElementNS(svgNS, "rect");
+      bgRect.setAttribute("x", String(x));
+      bgRect.setAttribute("y", String(yPos));
+      bgRect.setAttribute("width", String(cellW));
+      bgRect.setAttribute("height", String(cellH));
+      bgRect.setAttribute("rx", "3");
+      bgRect.setAttribute("ry", "3");
+      bgRect.setAttribute("fill", isFuture ? "#f9f9f9" : "#ebedf0");
+      svg.appendChild(bgRect);
+
+      if (!isFuture) {
+        var activeMembers = [];
+        var tooltipParts = [dateStr];
+        for (var mi2 = 0; mi2 < memberList.length; mi2++) {
+          var mInfo = memberList[mi2];
+          var mDayData = groupData.members[mInfo.deviceId].stats[dateStr];
+          if (mDayData && mDayData.totalSeconds > 0) {
+            var mLevel = self.getColorLevel(mDayData.totalSeconds, memberMaxValues[mi2]);
+            activeMembers.push({ index: mi2, level: mLevel, seconds: mDayData.totalSeconds });
+            tooltipParts.push(mInfo.userName + ": " + self.formatDuration(mDayData.totalSeconds));
+          }
+        }
+
+        if (activeMembers.length > 0) {
+          var clipId = "wclip-" + i;
+          var clipPath = doc.createElementNS(svgNS, "clipPath");
+          clipPath.setAttribute("id", clipId);
+          var clipRect = doc.createElementNS(svgNS, "rect");
+          clipRect.setAttribute("x", String(x));
+          clipRect.setAttribute("y", String(yPos));
+          clipRect.setAttribute("width", String(cellW));
+          clipRect.setAttribute("height", String(cellH));
+          clipRect.setAttribute("rx", "3");
+          clipRect.setAttribute("ry", "3");
+          clipPath.appendChild(clipRect);
+          svg.appendChild(clipPath);
+
+          var stripeGroup = doc.createElementNS(svgNS, "g");
+          stripeGroup.setAttribute("clip-path", "url(#" + clipId + ")");
+
+          var stripeH = cellH / activeMembers.length;
+          for (var si2 = 0; si2 < activeMembers.length; si2++) {
+            var am = activeMembers[si2];
+            var stripeColor = memberColors[am.index][am.level];
+            var stripeRect = doc.createElementNS(svgNS, "rect");
+            stripeRect.setAttribute("x", String(x));
+            stripeRect.setAttribute("y", String(yPos + si2 * stripeH));
+            stripeRect.setAttribute("width", String(cellW));
+            stripeRect.setAttribute("height", String(stripeH + 0.5));
+            stripeRect.setAttribute("fill", stripeColor);
+            stripeGroup.appendChild(stripeRect);
+          }
+          svg.appendChild(stripeGroup);
+        }
+
+        // Tooltip
+        var tooltipRect = doc.createElementNS(svgNS, "rect");
+        tooltipRect.setAttribute("x", String(x));
+        tooltipRect.setAttribute("y", String(yPos));
+        tooltipRect.setAttribute("width", String(cellW));
+        tooltipRect.setAttribute("height", String(cellH));
+        tooltipRect.setAttribute("fill", "transparent");
+        tooltipRect.style.cursor = "pointer";
+        var titleEl = doc.createElementNS(svgNS, "title");
+        titleEl.textContent = tooltipParts.join("\n");
+        tooltipRect.appendChild(titleEl);
+        svg.appendChild(tooltipRect);
+      }
+
+      // Today highlight
+      if (dateStr === todayStr) {
+        var todayRect = doc.createElementNS(svgNS, "rect");
+        todayRect.setAttribute("x", String(x));
+        todayRect.setAttribute("y", String(yPos));
+        todayRect.setAttribute("width", String(cellW));
+        todayRect.setAttribute("height", String(cellH));
+        todayRect.setAttribute("rx", "3");
+        todayRect.setAttribute("ry", "3");
+        todayRect.setAttribute("fill", "none");
+        todayRect.setAttribute("stroke", "#1f6feb");
+        todayRect.setAttribute("stroke-width", "2");
+        svg.appendChild(todayRect);
+      }
+
+      // Day number
+      var dayText = doc.createElementNS(svgNS, "text");
+      dayText.setAttribute("x", String(x + cellW / 2));
+      dayText.setAttribute("y", String(yPos + cellH / 2 + 5));
+      dayText.setAttribute("font-size", "12");
+      dayText.setAttribute("text-anchor", "middle");
+      var hasHighLevel = false;
+      if (!isFuture) {
+        for (var mi3 = 0; mi3 < memberList.length; mi3++) {
+          var mDayData3 = groupData.members[memberList[mi3].deviceId].stats[dateStr];
+          if (mDayData3 && mDayData3.totalSeconds > 0) {
+            var mLvl = self.getColorLevel(mDayData3.totalSeconds, memberMaxValues[mi3]);
+            if (mLvl >= 3) { hasHighLevel = true; break; }
+          }
+        }
+      }
+      dayText.setAttribute("fill", hasHighLevel ? "#ffffff" : "#57606a");
+      dayText.textContent = String(cellDate.getDate());
+      svg.appendChild(dayText);
+    }
+
+    // Wrap SVG
+    var svgWrapper = doc.createElement("div");
+    svgWrapper.style.cssText = "width:100%; margin-bottom:2px;";
+    svgWrapper.appendChild(svg);
+    fragment.appendChild(svgWrapper);
+
+    // Member legend (HTML flex-wrap)
+    fragment.appendChild(this._buildMemberLegendHTML(doc, memberList, memberColors));
+
+    return fragment;
+  }
+
+  /**
+   * Helper to compute aggregated summary for a week.
+   */
+  _computeWeekAggSummary(aggregated, refDate) {
+    var summary = { totalSeconds: 0, activeDays: 0, currentStreak: 0, maxStreak: 0 };
+    var dayOfRef = refDate.getDay();
+    var startOfWeek = new Date(refDate);
+    startOfWeek.setDate(startOfWeek.getDate() - dayOfRef);
+    var today = new Date();
+    var todayStr = this.formatDate(today);
+    var tempStreak = 0;
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(startOfWeek);
+      d.setDate(d.getDate() + i);
+      var ds = this.formatDate(d);
+      if (ds > todayStr) break;
+      var dayData = aggregated[ds];
+      if (dayData && dayData.totalSeconds > 0) {
+        summary.totalSeconds += dayData.totalSeconds;
+        summary.activeDays++;
+        tempStreak++;
+        if (tempStreak > summary.maxStreak) summary.maxStreak = tempStreak;
+      } else {
+        tempStreak = 0;
+      }
+    }
+    summary.currentStreak = tempStreak;
+    return summary;
+  }
 }
 
 
@@ -1428,6 +1891,8 @@ Zotero.ReadingHeatmap = {
   _calendarMode: "month",      // "month" or "week"  (NEW in v0.6.0)
   _showSummary: true,          // toggle summary bar  (NEW in v0.6.0)
   _weekRefDate: null,          // reference date for week view navigation
+  _groupDisplayMode: "combined",  // "combined" (aggregated) or "overlay" (multi-color stripes) (NEW in v0.6.1)
+  _showMembers: true,             // toggle individual member heatmaps in group view (NEW in v0.6.1)
 
   async init(id, version, rootURI) {
     this.id = id;
@@ -1760,6 +2225,7 @@ Zotero.ReadingHeatmap = {
   },
 
   async _renderGroupView(doc, body, year, month) {
+    var self = this;
     var groupData;
     if (this._calendarMode === "week") {
       groupData = await this.sync.getGroupWeeklyData(this._selectedGroupId, this._weekRefDate);
@@ -1785,48 +2251,130 @@ Zotero.ReadingHeatmap = {
     groupHeader.textContent = "\uD83D\uDC65 " + groupName;
     body.appendChild(groupHeader);
 
-    // Render aggregated heatmap
-    var aggSummary = this.storage.computeSimpleSummary(groupData.aggregated);
-    var aggFragment;
-    if (this._calendarMode === "week") {
-      aggFragment = this.renderer.buildWeeklyHeatmapDOM(
-        doc, groupData.aggregated, aggSummary, this._weekRefDate, "personal", "All Members (Combined)", this._showSummary
-      );
-    } else {
-      aggFragment = this.renderer.buildMonthlyHeatmapDOM(
-        doc, groupData.aggregated, aggSummary, year, month, "personal", "All Members (Combined)", this._showSummary
-      );
-    }
-    body.appendChild(aggFragment);
+    // --- Group view toolbar: Combined/Overlay toggle + Members collapse ---
+    var groupToolbar = doc.createElement("div");
+    groupToolbar.style.cssText = "display:flex; justify-content:center; align-items:center; gap:6px; margin-bottom:8px; flex-wrap:wrap;";
 
-    // Render individual member heatmaps
+    // Combined / Overlay toggle
+    var combinedBtn = doc.createElement("button");
+    combinedBtn.textContent = "Combined";
+    var overlayBtn = doc.createElement("button");
+    overlayBtn.textContent = "Overlay";
+
+    var activeStyle = "padding:3px 10px; border:1px solid #1f6feb; border-radius:4px; background:#ddf4ff; color:#1f6feb; cursor:pointer; font-size:11px; font-weight:600;";
+    var inactiveStyle = "padding:3px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#57606a; cursor:pointer; font-size:11px;";
+
+    combinedBtn.style.cssText = (this._groupDisplayMode === "combined") ? activeStyle : inactiveStyle;
+    overlayBtn.style.cssText = (this._groupDisplayMode === "overlay") ? activeStyle : inactiveStyle;
+
+    combinedBtn.addEventListener("click", function() {
+      if (self._groupDisplayMode !== "combined") {
+        self._groupDisplayMode = "combined";
+        self._refreshPanel();
+      }
+    });
+    overlayBtn.addEventListener("click", function() {
+      if (self._groupDisplayMode !== "overlay") {
+        self._groupDisplayMode = "overlay";
+        self._refreshPanel();
+      }
+    });
+
+    groupToolbar.appendChild(combinedBtn);
+    groupToolbar.appendChild(overlayBtn);
+
+    // Separator
+    var sepSpan = doc.createElement("span");
+    sepSpan.style.cssText = "color:#d0d7de; font-size:14px;";
+    sepSpan.textContent = "|";
+    groupToolbar.appendChild(sepSpan);
+
+    // Members collapse/expand button
+    var membersBtn = doc.createElement("button");
+    membersBtn.textContent = this._showMembers ? "Members \u25B2" : "Members \u25BC";
+    membersBtn.style.cssText = "padding:3px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#57606a; cursor:pointer; font-size:11px;";
+    membersBtn.addEventListener("click", function() {
+      self._showMembers = !self._showMembers;
+      self._refreshPanel();
+    });
+    groupToolbar.appendChild(membersBtn);
+
+    body.appendChild(groupToolbar);
+
+    // --- Build member list (shared by both modes) ---
     var colorKeys = ["user1", "user2", "user3"];
     var colorIndex = 0;
     var myDeviceId = this.storage.getDeviceId();
+    var myColor = this.storage.getUserColor();
+    var memberList = [];
 
     for (var deviceId in groupData.members) {
       var member = groupData.members[deviceId];
       var isMe = (deviceId === myDeviceId);
-      var memberLabel = member.userName + (isMe ? " (You)" : "");
-      var memberColor = isMe ? this.storage.getUserColor() : colorKeys[colorIndex % colorKeys.length];
+      memberList.push({
+        deviceId: deviceId,
+        userName: member.userName,
+        colorScheme: isMe ? myColor : colorKeys[colorIndex % colorKeys.length],
+        isMe: isMe,
+      });
       if (!isMe) colorIndex++;
+    }
 
-      var memberSummary = this.storage.computeSimpleSummary(member.stats);
-      var memberFragment;
+    // --- Render main heatmap based on display mode ---
+    if (this._groupDisplayMode === "overlay") {
+      // Overlay mode: single heatmap with multi-color stripes
+      var overlayFragment;
       if (this._calendarMode === "week") {
-        memberFragment = this.renderer.buildWeeklyHeatmapDOM(
-          doc, member.stats, memberSummary, this._weekRefDate, memberColor, memberLabel, this._showSummary
+        overlayFragment = this.renderer.buildGroupOverlayWeeklyDOM(
+          doc, groupData, memberList, this._weekRefDate, this._showSummary
         );
       } else {
-        memberFragment = this.renderer.buildMonthlyHeatmapDOM(
-          doc, member.stats, memberSummary, year, month, memberColor, memberLabel, this._showSummary
+        overlayFragment = this.renderer.buildGroupOverlayMonthlyDOM(
+          doc, groupData, memberList, year, month, this._showSummary
         );
       }
+      body.appendChild(overlayFragment);
+    } else {
+      // Combined mode: aggregated single-color heatmap
+      var aggSummary = this.storage.computeSimpleSummary(groupData.aggregated);
+      var aggFragment;
+      if (this._calendarMode === "week") {
+        aggFragment = this.renderer.buildWeeklyHeatmapDOM(
+          doc, groupData.aggregated, aggSummary, this._weekRefDate, "personal", "All Members (Combined)", this._showSummary
+        );
+      } else {
+        aggFragment = this.renderer.buildMonthlyHeatmapDOM(
+          doc, groupData.aggregated, aggSummary, year, month, "personal", "All Members (Combined)", this._showSummary
+        );
+      }
+      body.appendChild(aggFragment);
+    }
 
-      var sep = doc.createElement("hr");
-      sep.style.cssText = "border:none; border-top:1px solid #d0d7de; margin:8px 0;";
-      body.appendChild(sep);
-      body.appendChild(memberFragment);
+    // --- Render individual member heatmaps (if expanded) ---
+    if (this._showMembers) {
+      for (var mi = 0; mi < memberList.length; mi++) {
+        var mInfo = memberList[mi];
+        var mData = groupData.members[mInfo.deviceId];
+        var memberLabel = mInfo.userName + (mInfo.isMe ? " (You)" : "");
+        var memberColor = mInfo.colorScheme;
+
+        var memberSummary = this.storage.computeSimpleSummary(mData.stats);
+        var memberFragment;
+        if (this._calendarMode === "week") {
+          memberFragment = this.renderer.buildWeeklyHeatmapDOM(
+            doc, mData.stats, memberSummary, this._weekRefDate, memberColor, memberLabel, this._showSummary
+          );
+        } else {
+          memberFragment = this.renderer.buildMonthlyHeatmapDOM(
+            doc, mData.stats, memberSummary, year, month, memberColor, memberLabel, this._showSummary
+          );
+        }
+
+        var sep = doc.createElement("hr");
+        sep.style.cssText = "border:none; border-top:1px solid #d0d7de; margin:8px 0;";
+        body.appendChild(sep);
+        body.appendChild(memberFragment);
+      }
     }
   },
 
