@@ -6,8 +6,9 @@
   "author": "Manus AI",
   "homepage_url": "https://github.com/zotero-reading-heatmap",
   "icons": {
-    "48": "chrome/content/icons/favicon.png",
-    "96": "chrome/content/icons/favicon.png"
+    "16": "chrome/content/icons/icon16.png",
+    "32": "chrome/content/icons/icon32.png",
+    "64": "chrome/content/icons/icon64.png"
   },
   "applications": {
     "zotero": {
