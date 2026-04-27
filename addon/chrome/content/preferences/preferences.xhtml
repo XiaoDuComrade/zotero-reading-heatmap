@@ -1,0 +1,93 @@
+<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml"
+      id="reading-heatmap-prefs"
+      onload="ReadingHeatmapPrefs.init();">
+
+  <groupbox>
+    <label><html:h2>Reading Heatmap Settings</html:h2></label>
+
+    <vbox style="margin: 8px 0;">
+      <label value="User Name (displayed in groups):"/>
+      <html:input id="pref-user-name" type="text"
+                  preference="extensions.reading-heatmap.user.name"
+                  style="width: 200px; margin-top: 4px;"/>
+    </vbox>
+  </groupbox>
+
+  <groupbox>
+    <label><html:h3>Server</html:h3></label>
+
+    <vbox style="margin: 8px 0;">
+      <label value="Server URL (for group sharing):"/>
+      <html:input id="pref-server-url" type="text"
+                  preference="extensions.reading-heatmap.server.url"
+                  placeholder="http://your-server:3456"
+                  style="width: 300px; margin-top: 4px;"/>
+      <hbox align="center" style="margin-top: 6px;">
+        <button id="test-server-btn" label="Test Connection"/>
+        <html:span id="test-server-result" style="margin-left: 8px; font-size: 12px; color: #666;"></html:span>
+      </hbox>
+      <description style="font-size: 11px; color: #666; margin-top: 4px;">
+        Leave empty to disable sync. See SERVER_DEPLOYMENT.md for deployment guide.
+      </description>
+    </vbox>
+  </groupbox>
+
+  <groupbox>
+    <label><html:h3>Group Management</html:h3></label>
+
+    <hbox align="center" style="margin: 4px 0;">
+      <html:input id="group-name-input" type="text"
+                  placeholder="Group Name"
+                  style="width: 150px; margin-right: 8px;"/>
+      <button id="create-group-btn" label="Create Group"/>
+    </hbox>
+
+    <hbox align="center" style="margin: 4px 0;">
+      <html:input id="invite-code-input" type="text"
+                  placeholder="Invite Code (6 chars)"
+                  style="width: 150px; margin-right: 8px; text-transform: uppercase;"/>
+      <button id="join-group-btn" label="Join Group"/>
+    </hbox>
+
+    <vbox id="group-list-container" style="margin-top: 8px;">
+      <!-- Dynamically populated -->
+    </vbox>
+  </groupbox>
+
+  <groupbox>
+    <label><html:h3>Data Import</html:h3></label>
+
+    <vbox style="margin: 8px 0;">
+      <description style="font-size: 11px; color: #666; margin-bottom: 8px;">
+        Import reading history from Zotero Style plugin.
+      </description>
+      <hbox align="center" style="margin: 4px 0;">
+        <button id="import-style-file-btn" label="Import from JSON File"/>
+        <button id="import-style-addon-btn" label="Import from Addon Item" style="margin-left: 8px;"/>
+      </hbox>
+    </vbox>
+  </groupbox>
+
+  <groupbox>
+    <label><html:h3>Data Export</html:h3></label>
+
+    <vbox style="margin: 8px 0;">
+      <hbox align="center" style="margin: 4px 0;">
+        <button id="export-csv-btn" label="Export CSV"/>
+        <button id="export-json-btn" label="Export JSON Backup" style="margin-left: 8px;"/>
+      </hbox>
+    </vbox>
+  </groupbox>
+
+  <groupbox>
+    <label><html:h3>Tracking</html:h3></label>
+
+    <vbox style="margin: 8px 0;">
+      <label value="Idle Threshold (seconds):"/>
+      <html:input id="pref-idle-threshold" type="number" min="30" max="300"
+                  preference="extensions.reading-heatmap.tracker.idleThreshold"
+                  style="width: 80px; margin-top: 4px;"/>
+    </vbox>
+  </groupbox>
+</vbox>
