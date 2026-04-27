@@ -1,16 +1,30 @@
 /* eslint-disable no-undef */
 /**
- * Reading Heatmap - Preferences Script v0.5.1
+ * Reading Heatmap - Preferences Script v0.5.2
  * Loaded via Zotero.PreferencePanes.register({ scripts: [...] })
  * 
- * Fixed: Use both "command" and "click" events for button compatibility
+ * Fix: Use auto-initialization instead of relying on onload attribute,
+ *      because PreferencePanes loads XHTML as a fragment where onload may not fire.
+ * Fix: Simplified button binding to avoid e.preventDefault() on command events.
+ * Fix: Added robust initialization with retry mechanism.
  */
 
 var ReadingHeatmapPrefs = {
+  _initialized: false,
+
   init: function() {
-    Zotero.debug("[ReadingHeatmap:Prefs] Preferences pane loaded");
+    if (this._initialized) return;
 
     var doc = document;
+    var prefsRoot = doc.getElementById("reading-heatmap-prefs");
+    if (!prefsRoot) {
+      Zotero.debug("[ReadingHeatmap:Prefs] Prefs root element not found, deferring init...");
+      return;
+    }
+
+    this._initialized = true;
+    Zotero.debug("[ReadingHeatmap:Prefs] Preferences pane initializing");
+
     var self = this;
 
     // Wire up Test Server button
@@ -29,6 +43,11 @@ var ReadingHeatmapPrefs = {
           resultSpan.textContent = result.message;
           resultSpan.style.color = result.success ? "#2da44e" : "#cf222e";
         }
+      } else {
+        if (resultSpan) {
+          resultSpan.textContent = "Plugin not initialized. Please restart Zotero.";
+          resultSpan.style.color = "#cf222e";
+        }
       }
     });
 
@@ -37,7 +56,9 @@ var ReadingHeatmapPrefs = {
       var nameInput = doc.getElementById("group-name-input");
       var name = nameInput ? nameInput.value.trim() : "";
       if (!name) {
-        Zotero.ReadingHeatmap._showMessage("Please enter a group name.");
+        if (Zotero.ReadingHeatmap) {
+          Zotero.ReadingHeatmap._showMessage("Please enter a group name.");
+        }
         return;
       }
       if (Zotero.ReadingHeatmap) {
@@ -52,7 +73,9 @@ var ReadingHeatmapPrefs = {
       var codeInput = doc.getElementById("invite-code-input");
       var code = codeInput ? codeInput.value.trim() : "";
       if (!code) {
-        Zotero.ReadingHeatmap._showMessage("Please enter an invite code.");
+        if (Zotero.ReadingHeatmap) {
+          Zotero.ReadingHeatmap._showMessage("Please enter an invite code.");
+        }
         return;
       }
       if (Zotero.ReadingHeatmap) {
@@ -90,11 +113,16 @@ var ReadingHeatmapPrefs = {
 
     // Populate group list
     self._refreshGroupList(doc);
+
+    Zotero.debug("[ReadingHeatmap:Prefs] Preferences pane initialized successfully");
   },
 
   /**
    * Bind a button with both "command" and "click" events for compatibility.
    * Zotero 8's XUL buttons may respond to "command" or "click" depending on context.
+   * 
+   * Fix: Removed e.preventDefault() which could interfere with XUL event handling.
+   * Fix: Simplified double-fire prevention using a timestamp-based approach.
    */
   _bindButton: function(doc, buttonId, handler) {
     var btn = doc.getElementById(buttonId);
@@ -102,25 +130,27 @@ var ReadingHeatmapPrefs = {
       Zotero.debug("[ReadingHeatmap:Prefs] Button not found: " + buttonId);
       return;
     }
-    // Use "command" for XUL buttons (primary), "click" as fallback
-    btn.addEventListener("command", function(e) {
-      e.preventDefault();
-      handler();
-    });
-    btn.addEventListener("click", function(e) {
-      // Only fire on click if command didn't fire (avoid double-fire)
-      // We use a flag to prevent double execution
-      if (btn._commandFired) {
-        btn._commandFired = false;
-        return;
+
+    var lastFired = 0;
+    var DEBOUNCE_MS = 300;
+
+    var wrappedHandler = function() {
+      var now = Date.now();
+      if (now - lastFired < DEBOUNCE_MS) return;
+      lastFired = now;
+      try {
+        handler();
+      } catch (e) {
+        Zotero.debug("[ReadingHeatmap:Prefs] Button handler error (" + buttonId + "): " + e);
       }
-      handler();
-    });
-    // Track command event to prevent double-fire
-    btn.addEventListener("command", function() {
-      btn._commandFired = true;
-      setTimeout(function() { btn._commandFired = false; }, 100);
-    }, true);
+    };
+
+    // Use "command" for XUL buttons (primary event in XUL)
+    btn.addEventListener("command", wrappedHandler);
+    // Use "click" as fallback for contexts where command doesn't fire
+    btn.addEventListener("click", wrappedHandler);
+
+    Zotero.debug("[ReadingHeatmap:Prefs] Bound button: " + buttonId);
   },
 
   _refreshGroupList: function(doc) {
@@ -148,6 +178,8 @@ var ReadingHeatmapPrefs = {
     headerLabel.setAttribute("style", "font-weight: bold; margin-bottom: 4px;");
     container.appendChild(headerLabel);
 
+    var self = this;
+
     for (var i = 0; i < groupIds.length; i++) {
       var groupId = groupIds[i];
       var groupInfo = groups[groupId];
@@ -165,29 +197,20 @@ var ReadingHeatmapPrefs = {
       removeBtn.setAttribute("label", "Leave");
       removeBtn.setAttribute("style", "margin-left: 8px;");
 
-      // Closure to capture groupId
+      // Closure to capture groupId, using the same debounce pattern
       (function(gid) {
-        var self2 = ReadingHeatmapPrefs;
-        removeBtn.addEventListener("command", function() {
+        var lastFired = 0;
+        var leaveHandler = function() {
+          var now = Date.now();
+          if (now - lastFired < 300) return;
+          lastFired = now;
           Zotero.ReadingHeatmap.storage.removeGroup(gid);
           Zotero.ReadingHeatmap._showMessage("Left group.");
-          self2._refreshGroupList(doc);
+          self._refreshGroupList(doc);
           Zotero.ReadingHeatmap._refreshPanel();
-        });
-        removeBtn.addEventListener("click", function() {
-          if (removeBtn._commandFired) {
-            removeBtn._commandFired = false;
-            return;
-          }
-          Zotero.ReadingHeatmap.storage.removeGroup(gid);
-          Zotero.ReadingHeatmap._showMessage("Left group.");
-          self2._refreshGroupList(doc);
-          Zotero.ReadingHeatmap._refreshPanel();
-        });
-        removeBtn.addEventListener("command", function() {
-          removeBtn._commandFired = true;
-          setTimeout(function() { removeBtn._commandFired = false; }, 100);
-        }, true);
+        };
+        removeBtn.addEventListener("command", leaveHandler);
+        removeBtn.addEventListener("click", leaveHandler);
       })(groupId);
 
       hbox.appendChild(removeBtn);
@@ -195,3 +218,58 @@ var ReadingHeatmapPrefs = {
     }
   }
 };
+
+// ============================================================
+// AUTO-INITIALIZATION
+// ============================================================
+// In Zotero's PreferencePanes system, the XHTML is loaded as a fragment,
+// so the "onload" attribute on the root element may NOT fire.
+// We must self-initialize when the script is loaded.
+//
+// Strategy: Try to init immediately. If the DOM element isn't ready yet,
+// use a polling retry with a short interval.
+// ============================================================
+
+(function() {
+  function tryInit() {
+    try {
+      if (document.getElementById("reading-heatmap-prefs")) {
+        ReadingHeatmapPrefs.init();
+        return true;
+      }
+    } catch (e) {
+      Zotero.debug("[ReadingHeatmap:Prefs] Auto-init attempt error: " + e);
+    }
+    return false;
+  }
+
+  // Attempt 1: Immediate
+  if (tryInit()) return;
+
+  // Attempt 2: On DOMContentLoaded
+  document.addEventListener("DOMContentLoaded", function() {
+    if (!ReadingHeatmapPrefs._initialized) tryInit();
+  });
+
+  // Attempt 3: On load event
+  if (typeof window !== "undefined") {
+    window.addEventListener("load", function() {
+      if (!ReadingHeatmapPrefs._initialized) tryInit();
+    });
+  }
+
+  // Attempt 4: Polling retry (covers edge cases in Zotero's async pane loading)
+  var retryCount = 0;
+  var maxRetries = 50;  // 50 * 100ms = 5 seconds max
+  var retryTimer = setInterval(function() {
+    retryCount++;
+    if (ReadingHeatmapPrefs._initialized || retryCount >= maxRetries) {
+      clearInterval(retryTimer);
+      if (!ReadingHeatmapPrefs._initialized && retryCount >= maxRetries) {
+        Zotero.debug("[ReadingHeatmap:Prefs] Auto-init failed after " + maxRetries + " retries");
+      }
+      return;
+    }
+    tryInit();
+  }, 100);
+})();

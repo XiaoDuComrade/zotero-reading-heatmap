@@ -1,7 +1,7 @@
 <vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
       xmlns:html="http://www.w3.org/1999/xhtml"
       id="reading-heatmap-prefs"
-      onload="ReadingHeatmapPrefs.init();">
+      onload="if(typeof ReadingHeatmapPrefs !== 'undefined') ReadingHeatmapPrefs.init();">
 
   <groupbox>
     <label><html:h2>Reading Heatmap Settings</html:h2></label>
