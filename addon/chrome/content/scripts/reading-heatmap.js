@@ -252,10 +252,17 @@ class StorageManager {
 
   _scheduleSave() {
     if (this.saveTimer) return;
-    this.saveTimer = Zotero.setTimeout(() => {
+    var self = this;
+    var _setTimeout = (typeof Zotero !== "undefined" && Zotero.setTimeout) ? Zotero.setTimeout : setTimeout;
+    try {
+      this.saveTimer = _setTimeout(function() {
+        self._save();
+        self.saveTimer = null;
+      }, 5000);
+    } catch (e) {
+      Zotero.debug("[ReadingHeatmap:Storage] _scheduleSave timer error: " + e + ", saving immediately");
       this._save();
-      this.saveTimer = null;
-    }, 5000);
+    }
   }
 
   async _save() {
@@ -270,7 +277,12 @@ class StorageManager {
 
   async forceSave() {
     if (this.saveTimer) {
-      Zotero.clearTimeout(this.saveTimer);
+      var _clearTimeout = (typeof Zotero !== "undefined" && Zotero.clearTimeout) ? Zotero.clearTimeout : clearTimeout;
+      try {
+        _clearTimeout(this.saveTimer);
+      } catch (e) {
+        try { clearTimeout(this.saveTimer); } catch (e2) {}
+      }
       this.saveTimer = null;
     }
     await this._save();
@@ -324,7 +336,9 @@ class ReadingTracker {
 
   _onNotify(event, type, ids, extraData) {
     if (type === "tab") {
-      Zotero.setTimeout(() => this._checkCurrentTab(), 500);
+      var self = this;
+      var _setTimeout = (typeof Zotero !== "undefined" && Zotero.setTimeout) ? Zotero.setTimeout : setTimeout;
+      try { _setTimeout(function() { self._checkCurrentTab(); }, 500); } catch(e) { setTimeout(function() { self._checkCurrentTab(); }, 500); }
     }
   }
 
@@ -373,12 +387,15 @@ class ReadingTracker {
 
   _startPolling() {
     if (this.pollInterval) return;
-    this.pollInterval = Zotero.setInterval(() => this._poll(), this.POLL_INTERVAL_MS);
+    var self = this;
+    var _setInterval = (typeof Zotero !== "undefined" && Zotero.setInterval) ? Zotero.setInterval : setInterval;
+    try { this.pollInterval = _setInterval(function() { self._poll(); }, this.POLL_INTERVAL_MS); } catch(e) { this.pollInterval = setInterval(function() { self._poll(); }, this.POLL_INTERVAL_MS); }
   }
 
   _stopPolling() {
     if (this.pollInterval) {
-      Zotero.clearInterval(this.pollInterval);
+      var _clearInterval = (typeof Zotero !== "undefined" && Zotero.clearInterval) ? Zotero.clearInterval : clearInterval;
+      try { _clearInterval(this.pollInterval); } catch(e) { try { clearInterval(this.pollInterval); } catch(e2) {} }
       this.pollInterval = null;
     }
   }
@@ -673,13 +690,20 @@ class SyncManager {
 
   _startSyncTimer() {
     if (this.syncTimer) return;
-    this.syncTimer = Zotero.setInterval(() => this.syncAll(), this.SYNC_INTERVAL_MS);
+    var self = this;
+    var _setInterval = (typeof Zotero !== "undefined" && Zotero.setInterval) ? Zotero.setInterval : setInterval;
+    var _setTimeout = (typeof Zotero !== "undefined" && Zotero.setTimeout) ? Zotero.setTimeout : setTimeout;
+    try { this.syncTimer = _setInterval(function() { self.syncAll(); }, this.SYNC_INTERVAL_MS); } catch(e) { this.syncTimer = setInterval(function() { self.syncAll(); }, this.SYNC_INTERVAL_MS); }
     // Initial sync after 10 seconds
-    Zotero.setTimeout(() => this.syncAll(), 10000);
+    try { _setTimeout(function() { self.syncAll(); }, 10000); } catch(e) { setTimeout(function() { self.syncAll(); }, 10000); }
   }
 
   _stopSyncTimer() {
-    if (this.syncTimer) { Zotero.clearInterval(this.syncTimer); this.syncTimer = null; }
+    if (this.syncTimer) {
+      var _clearInterval = (typeof Zotero !== "undefined" && Zotero.clearInterval) ? Zotero.clearInterval : clearInterval;
+      try { _clearInterval(this.syncTimer); } catch(e) { try { clearInterval(this.syncTimer); } catch(e2) {} }
+      this.syncTimer = null;
+    }
   }
 
   async _get(endpoint) {
