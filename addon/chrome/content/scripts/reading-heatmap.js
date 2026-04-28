@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.6.3
+ * Reading Heatmap - Main Plugin Script v0.6.4
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -17,7 +17,27 @@
  * - Added summary toggle button to show/hide Total/Active/Streak/Best stats
  * - Fixed group view legend overflow: legends now wrap within sidebar width
  * - Various UI polish and code cleanup
+ *
+ * Changes in v0.6.4:
+ * - Fixed: Zotero.setTimeout/setInterval not available in preferences context,
+ *   causing group create/join/leave to fail with "Zotero.setTimeout is not a function"
+ * - Fixed: Removed global FTL injection (insertFTLIfNeeded) that could interfere
+ *   with other plugins' (e.g. BetterNotes) l10n resources in the main window
  */
+
+// ============================================================
+// Timer compatibility shims
+// Zotero.setTimeout/setInterval may not be available in all contexts
+// (e.g. preferences pane). Fall back to global setTimeout/setInterval.
+// ============================================================
+var _rhSetTimeout = (typeof Zotero !== "undefined" && typeof Zotero.setTimeout === "function")
+  ? Zotero.setTimeout.bind(Zotero) : setTimeout;
+var _rhClearTimeout = (typeof Zotero !== "undefined" && typeof Zotero.clearTimeout === "function")
+  ? Zotero.clearTimeout.bind(Zotero) : clearTimeout;
+var _rhSetInterval = (typeof Zotero !== "undefined" && typeof Zotero.setInterval === "function")
+  ? Zotero.setInterval.bind(Zotero) : setInterval;
+var _rhClearInterval = (typeof Zotero !== "undefined" && typeof Zotero.clearInterval === "function")
+  ? Zotero.clearInterval.bind(Zotero) : clearInterval;
 
 // ============================================================
 // SECTION 1: StorageManager
@@ -389,7 +409,7 @@ class StorageManager {
 
   _scheduleSave() {
     if (this.saveTimer) return;
-    this.saveTimer = Zotero.setTimeout(() => {
+    this.saveTimer = _rhSetTimeout(() => {
       this._save();
       this.saveTimer = null;
     }, 5000);
@@ -407,7 +427,7 @@ class StorageManager {
 
   async forceSave() {
     if (this.saveTimer) {
-      Zotero.clearTimeout(this.saveTimer);
+      _rhClearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
     await this._save();
@@ -472,7 +492,7 @@ class ReadingTracker {
 
   _onNotify(event, type, ids, extraData) {
     if (type === "tab") {
-      Zotero.setTimeout(() => this._checkCurrentTab(), 500);
+      _rhSetTimeout(() => this._checkCurrentTab(), 500);
     }
   }
 
@@ -521,12 +541,12 @@ class ReadingTracker {
 
   _startPolling() {
     if (this.pollInterval) return;
-    this.pollInterval = Zotero.setInterval(() => this._poll(), this.POLL_INTERVAL_MS);
+    this.pollInterval = _rhSetInterval(() => this._poll(), this.POLL_INTERVAL_MS);
   }
 
   _stopPolling() {
     if (this.pollInterval) {
-      Zotero.clearInterval(this.pollInterval);
+      _rhClearInterval(this.pollInterval);
       this.pollInterval = null;
     }
   }
@@ -853,12 +873,12 @@ class SyncManager {
 
   _startSyncTimer() {
     if (this.syncTimer) return;
-    this.syncTimer = Zotero.setInterval(() => this.syncAll(), this.SYNC_INTERVAL_MS);
-    Zotero.setTimeout(() => this.syncAll(), 10000);
+    this.syncTimer = _rhSetInterval(() => this.syncAll(), this.SYNC_INTERVAL_MS);
+    _rhSetTimeout(() => this.syncAll(), 10000);
   }
 
   _stopSyncTimer() {
-    if (this.syncTimer) { Zotero.clearInterval(this.syncTimer); this.syncTimer = null; }
+    if (this.syncTimer) { _rhClearInterval(this.syncTimer); this.syncTimer = null; }
   }
 
   async _get(endpoint) {
@@ -1998,6 +2018,9 @@ Zotero.ReadingHeatmap = {
     this._sectionKey = Zotero.ItemPaneManager.registerSection({
       paneID: "reading-heatmap-panel",
       pluginID: "reading-heatmap@zotero-plugin.com",
+      // Load FTL via bodyXHTML linkset instead of global insertFTLIfNeeded
+      // to avoid interfering with other plugins' l10n resources
+      bodyXHTML: '<linkset><html:link rel="localization" href="reading-heatmap.ftl"></html:link></linkset>',
       header: {
         icon: "chrome://reading-heatmap/content/icons/icon32.png",
         l10nID: "reading-heatmap-section-header",

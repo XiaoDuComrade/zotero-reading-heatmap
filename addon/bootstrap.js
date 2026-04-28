@@ -28,13 +28,9 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   // Wait for UI to be ready
   await Zotero.uiReadyPromise;
 
-  // Add l10n resources to all existing windows BEFORE registering sections
-  var windows = Zotero.getMainWindows();
-  for (var i = 0; i < windows.length; i++) {
-    if (windows[i].ZoteroPane) {
-      _addL10nToWindow(windows[i]);
-    }
-  }
+  // NOTE: FTL resources are now loaded via bodyXHTML linkset in registerSection()
+  // instead of global insertFTLIfNeeded, to avoid interfering with other plugins'
+  // (e.g. BetterNotes) l10n resources in the main window.
 
   // Initialize the plugin (this calls registerSection which needs l10n)
   if (Zotero.ReadingHeatmap) {
@@ -44,22 +40,8 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   Zotero.debug("ReadingHeatmap: Started successfully");
 }
 
-function _addL10nToWindow(win) {
-  try {
-    if (win.MozXULElement && win.MozXULElement.insertFTLIfNeeded) {
-      win.MozXULElement.insertFTLIfNeeded("reading-heatmap.ftl");
-    }
-  } catch (e) {
-    Zotero.debug("ReadingHeatmap: insertFTLIfNeeded error: " + e);
-  }
-}
-
-function _removeL10nFromWindow(win) {
-  // FTL cleanup is handled automatically on shutdown
-}
-
 function onMainWindowLoad({ window: win }) {
-  _addL10nToWindow(win);
+  // FTL is loaded via bodyXHTML linkset, no need for insertFTLIfNeeded here
   if (Zotero.ReadingHeatmap) {
     Zotero.ReadingHeatmap.onMainWindowLoad(win);
   }
