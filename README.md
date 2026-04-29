@@ -4,7 +4,7 @@ A Zotero plugin that automatically tracks your reading activity and visualizes i
 
 ## Features
 
-**Automatic Reading Tracking** records time spent reading PDFs in Zotero with idle detection (auto-pauses after 60 seconds of no scrolling). Data is saved locally every 5 seconds.
+**Automatic Zotero Activity Tracking** records time while the Zotero main window is active/focused. This avoids relying on PDF scroll events, so time is counted even when you are reading without scrolling. Data is saved locally every few seconds.
 
 **Monthly Calendar Heatmap** displays a full month of reading activity in a calendar grid with 5-level color grading (light gray to dark green). Navigate between months with pagination controls. Today's cell is highlighted with a blue border.
 
@@ -89,13 +89,38 @@ The main plugin script (`reading-heatmap.js`) is organized into six sections:
 | Section | Class / Object | Responsibility |
 |---|---|---|
 | 1 | `StorageManager` | Local JSON data persistence, daily/weekly/monthly stats |
-| 2 | `ReadingTracker` | Automatic PDF reading time tracking with idle detection |
+| 2 | `ReadingTracker` | Zotero active-window time tracking using focus/blur events |
 | 3 | `SyncManager` | Server communication, group management, data upload/download |
 | 4 | `HeatmapRenderer` | SVG-based monthly and weekly heatmap rendering |
 | 5 | `StyleDataImporter` | Import reading data from Zotero Style plugin |
 | 6 | `Zotero.ReadingHeatmap` | Main plugin object, UI orchestration, panel management |
 
 ## Changelog
+
+### v0.6.5
+
+- Changed tracking from PDF scroll-based detection to Zotero active-window timing
+- Removed the unused idle threshold preference from the settings pane
+
+### v0.6.6
+
+- Repacked the active-window tracking build with the same archive layout as the previous working XPI
+
+### v0.6.7
+
+- Rebuilt the XPI as a real ZIP archive for Zotero installation compatibility
+
+### v0.6.9
+
+- Fixed the preferences pane script loader by using the registered chrome content URL
+
+### v0.6.10
+
+- Fixed duplicate Item Pane section registration after add-on reloads/upgrades
+
+### v0.6.11
+
+- Fixed blank Group Overlay cells by rendering member stripes without SVG clipPath
 
 ### v0.6.2
 

@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.6.4
+ * Reading Heatmap - Main Plugin Script v0.6.11
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -23,7 +23,29 @@
  *   causing group create/join/leave to fail with "Zotero.setTimeout is not a function"
  * - Fixed: Removed global FTL injection (insertFTLIfNeeded) that could interfere
  *   with other plugins' (e.g. BetterNotes) l10n resources in the main window
+ *
+ * Changes in v0.6.5:
+ * - Changed tracking from PDF scroll-based reading detection to Zotero active-window
+ *   timing using focus/blur events.
+ *
+ * Changes in v0.6.8:
+ * - Wrap implementation classes in a local scope to avoid top-level class
+ *   redeclaration errors during add-on reloads.
+ *
+ * Changes in v0.6.9:
+ * - Load the preferences pane script via the registered chrome:// content URL
+ *   instead of a jar:file rootURI path.
+ *
+ * Changes in v0.6.10:
+ * - Make item pane section registration idempotent by cleaning up stale section
+ *   IDs before registering.
+ *
+ * Changes in v0.6.11:
+ * - Render group overlay stripes without SVG clipPath so colors are visible in
+ *   Zotero's embedded item pane.
  */
+
+{
 
 // ============================================================
 // Timer compatibility shims
@@ -461,157 +483,135 @@ class ReadingTracker {
   constructor(storage) {
     this.storage = storage;
     this.pollInterval = null;
-    this.notifierID = null;
     this.isTracking = false;
-    this.currentItemKey = null;
-    this.currentItemTitle = null;
-    this.lastPosition = { left: 0, top: 0 };
-    this.idleCount = 0;
+    this.lastTick = null;
+    this.windowListeners = new Map();
+    this.ACTIVITY_ITEM_KEY = "__zotero_window_active__";
+    this.ACTIVITY_TITLE = "Zotero Active Time";
     this.POLL_INTERVAL_MS = 10000;
-    this.IDLE_THRESHOLD = 6;
-    this.accumulatedSeconds = 0;
+    this.MAX_TICK_SECONDS = 60;
   }
 
   init() {
-    this.notifierID = Zotero.Notifier.registerObserver(
-      { notify: (event, type, ids, extraData) => this._onNotify(event, type, ids, extraData) },
-      ["tab"]
-    );
-    this._checkCurrentTab();
-    Zotero.debug("[ReadingHeatmap:Tracker] Initialized");
+    this.onMainWindowLoad(Zotero.getMainWindow());
+    this._syncFocusState();
+    Zotero.debug("[ReadingHeatmap:Tracker] Initialized window activity tracking");
   }
 
   shutdown() {
-    this._stopPolling();
-    if (this.notifierID) {
-      Zotero.Notifier.unregisterObserver(this.notifierID);
-      this.notifierID = null;
-    }
-    this._flushAccumulated();
+    this._stopTracking();
+    this.windowListeners.forEach(function(listeners, win) {
+      try {
+        win.removeEventListener("focus", listeners.focus, true);
+        win.removeEventListener("blur", listeners.blur, true);
+        if (win.document) {
+          win.document.removeEventListener("visibilitychange", listeners.visibility, true);
+        }
+      } catch (e) {}
+    });
+    this.windowListeners.clear();
   }
 
-  _onNotify(event, type, ids, extraData) {
-    if (type === "tab") {
-      _rhSetTimeout(() => this._checkCurrentTab(), 500);
+  onMainWindowLoad(win) {
+    if (!win || this.windowListeners.has(win)) return;
+    var self = this;
+    var listeners = {
+      focus: function() { self._syncFocusState(); },
+      blur: function() { _rhSetTimeout(function() { self._syncFocusState(); }, 100); },
+      visibility: function() { self._syncFocusState(); },
+    };
+    win.addEventListener("focus", listeners.focus, true);
+    win.addEventListener("blur", listeners.blur, true);
+    if (win.document) {
+      win.document.addEventListener("visibilitychange", listeners.visibility, true);
     }
+    this.windowListeners.set(win, listeners);
   }
 
-  _checkCurrentTab() {
+  onMainWindowUnload(win) {
+    var listeners = this.windowListeners.get(win);
+    if (!listeners) return;
     try {
-      var win = Zotero.getMainWindow();
-      if (!win || !win.Zotero_Tabs) return;
-      var tab = win.Zotero_Tabs._getTab(win.Zotero_Tabs.selectedID);
-      if (tab && tab.type === "reader") {
-        this._onReaderTabActivated(win.Zotero_Tabs.selectedID);
-      } else {
-        this._onReaderTabDeactivated();
+      win.removeEventListener("focus", listeners.focus, true);
+      win.removeEventListener("blur", listeners.blur, true);
+      if (win.document) {
+        win.document.removeEventListener("visibilitychange", listeners.visibility, true);
       }
-    } catch (e) {
-      Zotero.debug("[ReadingHeatmap:Tracker] Check tab error: " + e);
-    }
+    } catch (e) {}
+    this.windowListeners.delete(win);
+    this._syncFocusState();
   }
 
-  _onReaderTabActivated(tabId) {
+  _isAnyTrackedWindowActive() {
+    var activeWindow = null;
     try {
-      this._flushAccumulated();
-      var reader = Zotero.Reader.getByTabID(tabId);
-      if (!reader) return;
-      var item = Zotero.Items.get(reader.itemID);
-      if (!item) return;
-      var parentItem = item.parentItemID ? Zotero.Items.get(item.parentItemID) : item;
-      this.currentItemKey = parentItem.key;
-      this.currentItemTitle = parentItem.getField("title") || "Untitled";
-      this.isTracking = true;
-      this.idleCount = 0;
-      this.accumulatedSeconds = 0;
-      this._startPolling();
-      Zotero.debug("[ReadingHeatmap:Tracker] Tracking: " + this.currentItemTitle);
-    } catch (e) {
-      Zotero.debug("[ReadingHeatmap:Tracker] Activate error: " + e);
+      activeWindow = Services.focus.activeWindow;
+    } catch (e) {}
+
+    var active = false;
+    this.windowListeners.forEach(function(listeners, win) {
+      if (active || !win || win.closed) return;
+      var doc = win.document;
+      var visible = !doc || doc.visibilityState !== "hidden";
+      active = visible && (activeWindow === win || (doc && doc.hasFocus && doc.hasFocus()));
+    });
+    return active;
+  }
+
+  _syncFocusState() {
+    if (this._isAnyTrackedWindowActive()) {
+      this._startTracking();
+    } else {
+      this._stopTracking();
     }
   }
 
-  _onReaderTabDeactivated() {
-    this._flushAccumulated();
-    this._stopPolling();
-    this.isTracking = false;
-    this.currentItemKey = null;
-    this.currentItemTitle = null;
-  }
-
-  _startPolling() {
+  _startTracking() {
+    if (this.isTracking) return;
+    this.isTracking = true;
+    this.lastTick = Date.now();
+    Zotero.debug("[ReadingHeatmap:Tracker] Zotero window active");
     if (this.pollInterval) return;
     this.pollInterval = _rhSetInterval(() => this._poll(), this.POLL_INTERVAL_MS);
   }
 
-  _stopPolling() {
+  _stopTracking() {
+    if (!this.isTracking && !this.pollInterval) return;
+    this._recordElapsed();
+    this.isTracking = false;
+    this.lastTick = null;
     if (this.pollInterval) {
       _rhClearInterval(this.pollInterval);
       this.pollInterval = null;
     }
+    Zotero.debug("[ReadingHeatmap:Tracker] Zotero window inactive");
   }
 
   _poll() {
-    if (!this.isTracking || !this.currentItemKey) return;
-    try {
-      var win = Zotero.getMainWindow();
-      if (!win || !win.Zotero_Tabs) return;
-      var tab = win.Zotero_Tabs._getTab(win.Zotero_Tabs.selectedID);
-      if (!tab || tab.type !== "reader") {
-        this._onReaderTabDeactivated();
-        return;
-      }
-
-      var currentPosition = { left: 0, top: 0 };
-      try {
-        var reader = Zotero.Reader.getByTabID(win.Zotero_Tabs.selectedID);
-        if (reader && reader._internalReader && reader._internalReader._primaryView) {
-          var view = reader._internalReader._primaryView;
-          if (view._iframeWindow && view._iframeWindow.document) {
-            var container = view._iframeWindow.document.getElementById("viewerContainer");
-            if (container) {
-              currentPosition = { left: container.scrollLeft || 0, top: container.scrollTop || 0 };
-            }
-          }
-        }
-      } catch (ex) {
-        currentPosition = { left: Math.random(), top: Math.random() };
-      }
-
-      var positionChanged = currentPosition.left !== this.lastPosition.left ||
-                            currentPosition.top !== this.lastPosition.top;
-
-      if (positionChanged) {
-        this.idleCount = 0;
-        this.lastPosition = { ...currentPosition };
-        this.accumulatedSeconds += this.POLL_INTERVAL_MS / 1000;
-      } else {
-        this.idleCount++;
-        if (this.idleCount < this.IDLE_THRESHOLD) {
-          this.accumulatedSeconds += this.POLL_INTERVAL_MS / 1000;
-        }
-      }
-
-      if (this.accumulatedSeconds >= 60) {
-        this._flushAccumulated();
-      }
-    } catch (e) {
-      Zotero.debug("[ReadingHeatmap:Tracker] Poll error: " + e);
+    if (!this.isTracking) return;
+    if (!this._isAnyTrackedWindowActive()) {
+      this._stopTracking();
+      return;
     }
+    this._recordElapsed();
   }
 
-  _flushAccumulated() {
-    if (this.accumulatedSeconds > 0 && this.currentItemKey) {
-      this.storage.addReadingTime(
-        this.currentItemKey,
-        this.currentItemTitle,
-        Math.round(this.accumulatedSeconds)
-      );
-      Zotero.debug("[ReadingHeatmap:Tracker] Flushed " + Math.round(this.accumulatedSeconds) + "s for " + this.currentItemTitle);
-      this.accumulatedSeconds = 0;
-      if (Zotero.ReadingHeatmap && Zotero.ReadingHeatmap._refreshPanel) {
-        Zotero.ReadingHeatmap._refreshPanel();
-      }
+  _recordElapsed() {
+    if (!this.isTracking || !this.lastTick) return;
+    var now = Date.now();
+    var elapsedSeconds = Math.floor((now - this.lastTick) / 1000);
+    if (elapsedSeconds <= 0) return;
+    elapsedSeconds = Math.min(elapsedSeconds, this.MAX_TICK_SECONDS);
+    this.lastTick = now;
+
+    this.storage.addReadingTime(
+      this.ACTIVITY_ITEM_KEY,
+      this.ACTIVITY_TITLE,
+      elapsedSeconds
+    );
+    Zotero.debug("[ReadingHeatmap:Tracker] Recorded " + elapsedSeconds + "s of Zotero active time");
+    if (Zotero.ReadingHeatmap && Zotero.ReadingHeatmap._refreshPanel) {
+      Zotero.ReadingHeatmap._refreshPanel();
     }
   }
 }
@@ -1343,6 +1343,42 @@ class HeatmapRenderer {
     return legendDiv;
   }
 
+  _appendOverlayStripes(doc, svg, x, y, cellW, cellH, activeMembers, memberColors) {
+    if (!activeMembers || activeMembers.length === 0) return;
+
+    // Avoid clipPath here. In Zotero's embedded item pane, SVG url(#clip-id)
+    // references can fail to resolve from jar/chrome contexts, hiding stripes.
+    if (activeMembers.length === 1) {
+      var only = activeMembers[0];
+      var fullRect = doc.createElementNS("http://www.w3.org/2000/svg", "rect");
+      fullRect.setAttribute("x", String(x));
+      fullRect.setAttribute("y", String(y));
+      fullRect.setAttribute("width", String(cellW));
+      fullRect.setAttribute("height", String(cellH));
+      fullRect.setAttribute("rx", "3");
+      fullRect.setAttribute("ry", "3");
+      fullRect.setAttribute("fill", memberColors[only.index][only.level]);
+      svg.appendChild(fullRect);
+      return;
+    }
+
+    var innerX = x + 1;
+    var innerY = y + 1;
+    var innerW = cellW - 2;
+    var innerH = cellH - 2;
+    var stripeH = innerH / activeMembers.length;
+    for (var si = 0; si < activeMembers.length; si++) {
+      var am = activeMembers[si];
+      var stripeRect = doc.createElementNS("http://www.w3.org/2000/svg", "rect");
+      stripeRect.setAttribute("x", String(innerX));
+      stripeRect.setAttribute("y", String(innerY + si * stripeH));
+      stripeRect.setAttribute("width", String(innerW));
+      stripeRect.setAttribute("height", String(stripeH + 0.5));
+      stripeRect.setAttribute("fill", memberColors[am.index][am.level]);
+      svg.appendChild(stripeRect);
+    }
+  }
+
   /**
    * Build a single overlay heatmap for Group View (monthly).
    * Each cell is split horizontally into stripes for members who have data on that day.
@@ -1461,37 +1497,7 @@ class HeatmapRenderer {
           }
         }
 
-        if (activeMembers.length > 0) {
-          var clipId = "clip-" + day;
-          var clipPath = doc.createElementNS(svgNS, "clipPath");
-          clipPath.setAttribute("id", clipId);
-          var clipRect = doc.createElementNS(svgNS, "rect");
-          clipRect.setAttribute("x", String(x));
-          clipRect.setAttribute("y", String(y));
-          clipRect.setAttribute("width", String(cellW));
-          clipRect.setAttribute("height", String(cellH));
-          clipRect.setAttribute("rx", "3");
-          clipRect.setAttribute("ry", "3");
-          clipPath.appendChild(clipRect);
-          svg.appendChild(clipPath);
-
-          var stripeGroup = doc.createElementNS(svgNS, "g");
-          stripeGroup.setAttribute("clip-path", "url(#" + clipId + ")");
-
-          var stripeH = cellH / activeMembers.length;
-          for (var si2 = 0; si2 < activeMembers.length; si2++) {
-            var am = activeMembers[si2];
-            var stripeColor = memberColors[am.index][am.level];
-            var stripeRect = doc.createElementNS(svgNS, "rect");
-            stripeRect.setAttribute("x", String(x));
-            stripeRect.setAttribute("y", String(y + si2 * stripeH));
-            stripeRect.setAttribute("width", String(cellW));
-            stripeRect.setAttribute("height", String(stripeH + 0.5));
-            stripeRect.setAttribute("fill", stripeColor);
-            stripeGroup.appendChild(stripeRect);
-          }
-          svg.appendChild(stripeGroup);
-        }
+        this._appendOverlayStripes(doc, svg, x, y, cellW, cellH, activeMembers, memberColors);
 
         // Tooltip
         var tooltipRect = doc.createElementNS(svgNS, "rect");
@@ -1646,37 +1652,7 @@ class HeatmapRenderer {
           }
         }
 
-        if (activeMembers.length > 0) {
-          var clipId = "wclip-" + i;
-          var clipPath = doc.createElementNS(svgNS, "clipPath");
-          clipPath.setAttribute("id", clipId);
-          var clipRect = doc.createElementNS(svgNS, "rect");
-          clipRect.setAttribute("x", String(x));
-          clipRect.setAttribute("y", String(yPos));
-          clipRect.setAttribute("width", String(cellW));
-          clipRect.setAttribute("height", String(cellH));
-          clipRect.setAttribute("rx", "3");
-          clipRect.setAttribute("ry", "3");
-          clipPath.appendChild(clipRect);
-          svg.appendChild(clipPath);
-
-          var stripeGroup = doc.createElementNS(svgNS, "g");
-          stripeGroup.setAttribute("clip-path", "url(#" + clipId + ")");
-
-          var stripeH = cellH / activeMembers.length;
-          for (var si2 = 0; si2 < activeMembers.length; si2++) {
-            var am = activeMembers[si2];
-            var stripeColor = memberColors[am.index][am.level];
-            var stripeRect = doc.createElementNS(svgNS, "rect");
-            stripeRect.setAttribute("x", String(x));
-            stripeRect.setAttribute("y", String(yPos + si2 * stripeH));
-            stripeRect.setAttribute("width", String(cellW));
-            stripeRect.setAttribute("height", String(stripeH + 0.5));
-            stripeRect.setAttribute("fill", stripeColor);
-            stripeGroup.appendChild(stripeRect);
-          }
-          svg.appendChild(stripeGroup);
-        }
+        this._appendOverlayStripes(doc, svg, x, yPos, cellW, cellH, activeMembers, memberColors);
 
         // Tooltip
         var tooltipRect = doc.createElementNS(svgNS, "rect");
@@ -1930,6 +1906,8 @@ Zotero.ReadingHeatmap = {
   renderer: null,
   importer: null,
   _sectionKey: null,
+  _sectionPaneID: "reading-heatmap-panel",
+  _sectionFullPaneID: "reading-heatmap@zotero-plugin.com-reading-heatmap-panel",
   _panelBodies: new Set(),
   _currentYear: null,
   _currentMonth: null,
@@ -2013,10 +1991,32 @@ Zotero.ReadingHeatmap = {
     Zotero.debug("[ReadingHeatmap] Fully initialized v" + version);
   },
 
+  _unregisterSectionIfPresent() {
+    var ids = [
+      this._sectionKey,
+      this._sectionPaneID,
+      this._sectionFullPaneID,
+    ];
+    var seen = {};
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      if (!id || seen[id]) continue;
+      seen[id] = true;
+      try {
+        Zotero.ItemPaneManager.unregisterSection(id);
+        Zotero.debug("[ReadingHeatmap] Unregistered section: " + id);
+      } catch (e) {
+        Zotero.debug("[ReadingHeatmap] Section unregister skipped (" + id + "): " + e);
+      }
+    }
+    this._sectionKey = null;
+  },
+
   _registerSection() {
     var self = this;
+    this._unregisterSectionIfPresent();
     this._sectionKey = Zotero.ItemPaneManager.registerSection({
-      paneID: "reading-heatmap-panel",
+      paneID: this._sectionPaneID,
       pluginID: "reading-heatmap@zotero-plugin.com",
       // Load FTL via bodyXHTML linkset instead of global insertFTLIfNeeded
       // to avoid interfering with other plugins' l10n resources
@@ -2518,7 +2518,7 @@ Zotero.ReadingHeatmap = {
     Zotero.PreferencePanes.register({
       pluginID: "reading-heatmap@zotero-plugin.com",
       src: this.rootURI + "chrome/content/preferences/preferences.xhtml",
-      scripts: [this.rootURI + "chrome/content/preferences/prefs.js"],
+      scripts: ["chrome://reading-heatmap/content/preferences/prefs.js"],
       label: "Reading Heatmap",
       image: "chrome://reading-heatmap/content/icons/icon32.png",
     });
@@ -2701,11 +2701,11 @@ Zotero.ReadingHeatmap = {
   },
 
   onMainWindowLoad(win) {
-    // l10n is already loaded by bootstrap.js before init()
+    if (this.tracker) this.tracker.onMainWindowLoad(win);
   },
 
   onMainWindowUnload(win) {
-    // cleanup if needed
+    if (this.tracker) this.tracker.onMainWindowUnload(win);
   },
 
   shutdown() {
@@ -2713,14 +2713,9 @@ Zotero.ReadingHeatmap = {
     if (this.sync) this.sync.shutdown();
     if (this.storage) this.storage.forceSave();
 
-    try {
-      if (this._sectionKey) {
-        Zotero.ItemPaneManager.unregisterSection("reading-heatmap-panel");
-      }
-    } catch (e) {
-      Zotero.debug("[ReadingHeatmap] Unregister section error: " + e);
-    }
+    this._unregisterSectionIfPresent();
 
     this._panelBodies.clear();
   },
 };
+}
