@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.6.11
+ * Reading Heatmap - Main Plugin Script v0.6.12
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -43,6 +43,10 @@
  * Changes in v0.6.11:
  * - Render group overlay stripes without SVG clipPath so colors are visible in
  *   Zotero's embedded item pane.
+ *
+ * Changes in v0.6.12:
+ * - Added a compact sidebar mode that collapses controls into a slim divider,
+ *   leaving a clean calendar view.
  */
 
 {
@@ -1065,7 +1069,7 @@ class HeatmapRenderer {
    * @param {string} [label]
    * @param {boolean} showSummary - whether to show the summary bar
    */
-  buildMonthlyHeatmapDOM(doc, stats, summary, year, month, colorScheme, label, showSummary) {
+  buildMonthlyHeatmapDOM(doc, stats, summary, year, month, colorScheme, label, showSummary, hideLegend) {
     colorScheme = colorScheme || "personal";
     var colors = this.getColorScale(colorScheme);
     var fragment = doc.createDocumentFragment();
@@ -1181,7 +1185,9 @@ class HeatmapRenderer {
     fragment.appendChild(svgWrapper);
 
     // Legend as HTML (wraps properly)
-    fragment.appendChild(this._buildLegendHTML(doc, colorScheme));
+    if (hideLegend !== true) {
+      fragment.appendChild(this._buildLegendHTML(doc, colorScheme));
+    }
 
     return fragment;
   }
@@ -1196,7 +1202,7 @@ class HeatmapRenderer {
    * @param {string} [label]
    * @param {boolean} showSummary
    */
-  buildWeeklyHeatmapDOM(doc, stats, summary, refDate, colorScheme, label, showSummary) {
+  buildWeeklyHeatmapDOM(doc, stats, summary, refDate, colorScheme, label, showSummary, hideLegend) {
     colorScheme = colorScheme || "personal";
     var colors = this.getColorScale(colorScheme);
     var fragment = doc.createDocumentFragment();
@@ -1307,7 +1313,9 @@ class HeatmapRenderer {
     fragment.appendChild(svgWrapper);
 
     // Legend as HTML
-    fragment.appendChild(this._buildLegendHTML(doc, colorScheme));
+    if (hideLegend !== true) {
+      fragment.appendChild(this._buildLegendHTML(doc, colorScheme));
+    }
 
     return fragment;
   }
@@ -1383,7 +1391,7 @@ class HeatmapRenderer {
    * Build a single overlay heatmap for Group View (monthly).
    * Each cell is split horizontally into stripes for members who have data on that day.
    */
-  buildGroupOverlayMonthlyDOM(doc, groupData, memberList, year, month, showSummary) {
+  buildGroupOverlayMonthlyDOM(doc, groupData, memberList, year, month, showSummary, hideLegend) {
     var self = this;
     var svgNS = "http://www.w3.org/2000/svg";
     var fragment = doc.createDocumentFragment();
@@ -1556,7 +1564,9 @@ class HeatmapRenderer {
     fragment.appendChild(svgWrapper);
 
     // Member legend (HTML flex-wrap)
-    fragment.appendChild(this._buildMemberLegendHTML(doc, memberList, memberColors));
+    if (hideLegend !== true) {
+      fragment.appendChild(this._buildMemberLegendHTML(doc, memberList, memberColors));
+    }
 
     return fragment;
   }
@@ -1565,7 +1575,7 @@ class HeatmapRenderer {
    * Build a single overlay heatmap for Group View (weekly).
    * Each cell is split horizontally into stripes for members who have data on that day.
    */
-  buildGroupOverlayWeeklyDOM(doc, groupData, memberList, refDate, showSummary) {
+  buildGroupOverlayWeeklyDOM(doc, groupData, memberList, refDate, showSummary, hideLegend) {
     var self = this;
     var svgNS = "http://www.w3.org/2000/svg";
     var fragment = doc.createDocumentFragment();
@@ -1711,7 +1721,9 @@ class HeatmapRenderer {
     fragment.appendChild(svgWrapper);
 
     // Member legend (HTML flex-wrap)
-    fragment.appendChild(this._buildMemberLegendHTML(doc, memberList, memberColors));
+    if (hideLegend !== true) {
+      fragment.appendChild(this._buildMemberLegendHTML(doc, memberList, memberColors));
+    }
 
     return fragment;
   }
@@ -1915,6 +1927,7 @@ Zotero.ReadingHeatmap = {
   _selectedGroupId: null,
   _calendarMode: "month",      // "month" or "week"  (NEW in v0.6.0)
   _showSummary: true,          // toggle summary bar  (NEW in v0.6.0)
+  _controlsCollapsed: false,   // hide toolbars/buttons for a clean calendar view
   _weekRefDate: null,          // reference date for week view navigation
   _groupDisplayMode: "combined",  // "combined" (aggregated) or "overlay" (multi-color stripes) (NEW in v0.6.1)
   _showMembers: true,             // toggle individual member heatmaps in group view (NEW in v0.6.1)
@@ -2080,6 +2093,29 @@ Zotero.ReadingHeatmap = {
     Zotero.debug("[ReadingHeatmap] registerSection returned: " + this._sectionKey);
   },
 
+  _buildControlsCollapseToggle(doc) {
+    var self = this;
+    var wrapper = doc.createElement("div");
+    wrapper.style.cssText = "display:flex; align-items:center; gap:6px; width:100%; margin:0 0 6px 0; box-sizing:border-box;";
+
+    var line = doc.createElement("div");
+    line.style.cssText = "height:1px; background:#d0d7de; flex:1; min-width:0;";
+    wrapper.appendChild(line);
+
+    var toggleBtn = doc.createElement("button");
+    toggleBtn.textContent = this._controlsCollapsed ? "v^" : "^v";
+    toggleBtn.setAttribute("aria-label", this._controlsCollapsed ? "Show heatmap controls" : "Hide heatmap controls");
+    toggleBtn.setAttribute("title", this._controlsCollapsed ? "Show controls" : "Hide controls");
+    toggleBtn.style.cssText = "border:none; background:transparent; color:#57606a; cursor:pointer; font-size:12px; line-height:1; padding:0 2px; min-width:20px; font-family:monospace;";
+    toggleBtn.addEventListener("click", function() {
+      self._controlsCollapsed = !self._controlsCollapsed;
+      self._refreshPanel();
+    });
+    wrapper.appendChild(toggleBtn);
+
+    return wrapper;
+  },
+
   /**
    * Main render entry point for the side panel.
    * Renders navigation, calendar mode toggle, summary toggle, heatmap, and view toggle.
@@ -2092,133 +2128,137 @@ Zotero.ReadingHeatmap = {
     var months = ["January","February","March","April","May","June",
                   "July","August","September","October","November","December"];
 
-    // === Top toolbar: Calendar mode toggle (Week/Month) + Summary toggle ===
-    var toolbarDiv = doc.createElement("div");
-    toolbarDiv.style.cssText = "display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; width:100%; box-sizing:border-box;";
+    body.appendChild(this._buildControlsCollapseToggle(doc));
 
-    // Left: Week / Month toggle
-    var modeDiv = doc.createElement("div");
-    modeDiv.style.cssText = "display:flex; gap:2px; border:1px solid #d0d7de; border-radius:6px; overflow:hidden;";
+    if (!this._controlsCollapsed) {
+      // === Top toolbar: Calendar mode toggle (Week/Month) + Summary toggle ===
+      var toolbarDiv = doc.createElement("div");
+      toolbarDiv.style.cssText = "display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; width:100%; box-sizing:border-box;";
 
-    var weekBtn = doc.createElement("button");
-    weekBtn.textContent = "Week";
-    weekBtn.style.cssText = "padding:3px 10px; border:none; font-size:11px; cursor:pointer; " +
-      (this._calendarMode === "week"
-        ? "background:#0969da; color:#fff; font-weight:600;"
-        : "background:#f6f8fa; color:#24292f;");
-    weekBtn.addEventListener("click", function() {
-      if (self._calendarMode !== "week") {
-        self._calendarMode = "week";
-        // Set week ref date to a date in the current viewed month
-        self._weekRefDate = new Date(self._currentYear, self._currentMonth - 1,
-          Math.min(new Date().getDate(), new Date(self._currentYear, self._currentMonth, 0).getDate()));
-        var now = new Date();
-        if (self._weekRefDate > now) self._weekRefDate = now;
-        self._refreshPanel();
-      }
-    });
-    modeDiv.appendChild(weekBtn);
+      // Left: Week / Month toggle
+      var modeDiv = doc.createElement("div");
+      modeDiv.style.cssText = "display:flex; gap:2px; border:1px solid #d0d7de; border-radius:6px; overflow:hidden;";
 
-    var monthBtn = doc.createElement("button");
-    monthBtn.textContent = "Month";
-    monthBtn.style.cssText = "padding:3px 10px; border:none; font-size:11px; cursor:pointer; " +
-      (this._calendarMode === "month"
-        ? "background:#0969da; color:#fff; font-weight:600;"
-        : "background:#f6f8fa; color:#24292f;");
-    monthBtn.addEventListener("click", function() {
-      if (self._calendarMode !== "month") {
-        self._calendarMode = "month";
-        // Sync month from weekRefDate
-        self._currentYear = self._weekRefDate.getFullYear();
-        self._currentMonth = self._weekRefDate.getMonth() + 1;
-        self._refreshPanel();
-      }
-    });
-    modeDiv.appendChild(monthBtn);
-
-    toolbarDiv.appendChild(modeDiv);
-
-    // Right: Summary toggle button
-    var summaryBtn = doc.createElement("button");
-    summaryBtn.textContent = this._showSummary ? "Summary \u25B2" : "Summary \u25BC";
-    summaryBtn.style.cssText = "padding:3px 10px; border:1px solid #d0d7de; border-radius:6px; font-size:11px; cursor:pointer; " +
-      (this._showSummary ? "background:#ddf4ff; color:#0969da;" : "background:#f6f8fa; color:#57606a;");
-    summaryBtn.addEventListener("click", function() {
-      self._showSummary = !self._showSummary;
-      self._refreshPanel();
-    });
-    toolbarDiv.appendChild(summaryBtn);
-
-    body.appendChild(toolbarDiv);
-
-    // === Navigation header ===
-    var navDiv = doc.createElement("div");
-    navDiv.style.cssText = "display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0; width:100%; box-sizing:border-box;";
-
-    var prevBtn = doc.createElement("button");
-    prevBtn.style.cssText = "padding:2px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#24292f; cursor:pointer; font-size:14px; font-weight:bold;";
-    prevBtn.textContent = "\u25C0";
-    prevBtn.addEventListener("click", function() {
-      if (self._calendarMode === "week") {
-        self._navigateWeek(-1);
-      } else {
-        self._navigateMonth(-1);
-      }
-    });
-    navDiv.appendChild(prevBtn);
-
-    // Title: depends on calendar mode
-    var titleSpan = doc.createElement("span");
-    titleSpan.style.cssText = "font-size:14px; font-weight:600; color:#24292f;";
-    if (this._calendarMode === "week") {
-      // Show week range
-      var refDay = this._weekRefDate.getDay();
-      var weekStart = new Date(this._weekRefDate);
-      weekStart.setDate(weekStart.getDate() - refDay);
-      var weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekEnd.getDate() + 6);
-      var fmt = function(d) {
-        return (d.getMonth() + 1) + "/" + d.getDate();
-      };
-      titleSpan.textContent = fmt(weekStart) + " - " + fmt(weekEnd) + ", " + weekEnd.getFullYear();
-    } else {
-      titleSpan.textContent = months[month - 1] + " " + year;
-    }
-    navDiv.appendChild(titleSpan);
-
-    var nextBtn = doc.createElement("button");
-    nextBtn.style.cssText = "padding:2px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#24292f; cursor:pointer; font-size:14px; font-weight:bold;";
-    nextBtn.textContent = "\u25B6";
-
-    var now = new Date();
-    var isAtCurrent = false;
-    if (this._calendarMode === "week") {
-      // Check if current week contains today
-      var refDay2 = this._weekRefDate.getDay();
-      var ws = new Date(this._weekRefDate);
-      ws.setDate(ws.getDate() - refDay2);
-      var we = new Date(ws);
-      we.setDate(we.getDate() + 6);
-      isAtCurrent = (now >= ws && now <= we);
-    } else {
-      isAtCurrent = (year === now.getFullYear() && month === now.getMonth() + 1);
-    }
-
-    if (isAtCurrent) {
-      nextBtn.style.opacity = "0.3";
-      nextBtn.style.cursor = "default";
-    } else {
-      nextBtn.addEventListener("click", function() {
-        if (self._calendarMode === "week") {
-          self._navigateWeek(1);
-        } else {
-          self._navigateMonth(1);
+      var weekBtn = doc.createElement("button");
+      weekBtn.textContent = "Week";
+      weekBtn.style.cssText = "padding:3px 10px; border:none; font-size:11px; cursor:pointer; " +
+        (this._calendarMode === "week"
+          ? "background:#0969da; color:#fff; font-weight:600;"
+          : "background:#f6f8fa; color:#24292f;");
+      weekBtn.addEventListener("click", function() {
+        if (self._calendarMode !== "week") {
+          self._calendarMode = "week";
+          // Set week ref date to a date in the current viewed month
+          self._weekRefDate = new Date(self._currentYear, self._currentMonth - 1,
+            Math.min(new Date().getDate(), new Date(self._currentYear, self._currentMonth, 0).getDate()));
+          var nowForWeek = new Date();
+          if (self._weekRefDate > nowForWeek) self._weekRefDate = nowForWeek;
+          self._refreshPanel();
         }
       });
-    }
-    navDiv.appendChild(nextBtn);
+      modeDiv.appendChild(weekBtn);
 
-    body.appendChild(navDiv);
+      var monthBtn = doc.createElement("button");
+      monthBtn.textContent = "Month";
+      monthBtn.style.cssText = "padding:3px 10px; border:none; font-size:11px; cursor:pointer; " +
+        (this._calendarMode === "month"
+          ? "background:#0969da; color:#fff; font-weight:600;"
+          : "background:#f6f8fa; color:#24292f;");
+      monthBtn.addEventListener("click", function() {
+        if (self._calendarMode !== "month") {
+          self._calendarMode = "month";
+          // Sync month from weekRefDate
+          self._currentYear = self._weekRefDate.getFullYear();
+          self._currentMonth = self._weekRefDate.getMonth() + 1;
+          self._refreshPanel();
+        }
+      });
+      modeDiv.appendChild(monthBtn);
+
+      toolbarDiv.appendChild(modeDiv);
+
+      // Right: Summary toggle button
+      var summaryBtn = doc.createElement("button");
+      summaryBtn.textContent = this._showSummary ? "Summary \u25B2" : "Summary \u25BC";
+      summaryBtn.style.cssText = "padding:3px 10px; border:1px solid #d0d7de; border-radius:6px; font-size:11px; cursor:pointer; " +
+        (this._showSummary ? "background:#ddf4ff; color:#0969da;" : "background:#f6f8fa; color:#57606a;");
+      summaryBtn.addEventListener("click", function() {
+        self._showSummary = !self._showSummary;
+        self._refreshPanel();
+      });
+      toolbarDiv.appendChild(summaryBtn);
+
+      body.appendChild(toolbarDiv);
+
+      // === Navigation header ===
+      var navDiv = doc.createElement("div");
+      navDiv.style.cssText = "display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0; width:100%; box-sizing:border-box;";
+
+      var prevBtn = doc.createElement("button");
+      prevBtn.style.cssText = "padding:2px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#24292f; cursor:pointer; font-size:14px; font-weight:bold;";
+      prevBtn.textContent = "\u25C0";
+      prevBtn.addEventListener("click", function() {
+        if (self._calendarMode === "week") {
+          self._navigateWeek(-1);
+        } else {
+          self._navigateMonth(-1);
+        }
+      });
+      navDiv.appendChild(prevBtn);
+
+      // Title: depends on calendar mode
+      var titleSpan = doc.createElement("span");
+      titleSpan.style.cssText = "font-size:14px; font-weight:600; color:#24292f;";
+      if (this._calendarMode === "week") {
+        // Show week range
+        var refDay = this._weekRefDate.getDay();
+        var weekStart = new Date(this._weekRefDate);
+        weekStart.setDate(weekStart.getDate() - refDay);
+        var weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+        var fmt = function(d) {
+          return (d.getMonth() + 1) + "/" + d.getDate();
+        };
+        titleSpan.textContent = fmt(weekStart) + " - " + fmt(weekEnd) + ", " + weekEnd.getFullYear();
+      } else {
+        titleSpan.textContent = months[month - 1] + " " + year;
+      }
+      navDiv.appendChild(titleSpan);
+
+      var nextBtn = doc.createElement("button");
+      nextBtn.style.cssText = "padding:2px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#24292f; cursor:pointer; font-size:14px; font-weight:bold;";
+      nextBtn.textContent = "\u25B6";
+
+      var now = new Date();
+      var isAtCurrent = false;
+      if (this._calendarMode === "week") {
+        // Check if current week contains today
+        var refDay2 = this._weekRefDate.getDay();
+        var ws = new Date(this._weekRefDate);
+        ws.setDate(ws.getDate() - refDay2);
+        var we = new Date(ws);
+        we.setDate(we.getDate() + 6);
+        isAtCurrent = (now >= ws && now <= we);
+      } else {
+        isAtCurrent = (year === now.getFullYear() && month === now.getMonth() + 1);
+      }
+
+      if (isAtCurrent) {
+        nextBtn.style.opacity = "0.3";
+        nextBtn.style.cursor = "default";
+      } else {
+        nextBtn.addEventListener("click", function() {
+          if (self._calendarMode === "week") {
+            self._navigateWeek(1);
+          } else {
+            self._navigateMonth(1);
+          }
+        });
+      }
+      navDiv.appendChild(nextBtn);
+
+      body.appendChild(navDiv);
+    }
 
     // === Render heatmap based on view mode and calendar mode ===
     if (this._viewMode === "group" && this._selectedGroupId) {
@@ -2227,49 +2267,53 @@ Zotero.ReadingHeatmap = {
       this._renderPersonalView(doc, body, year, month);
     }
 
-    // === Bottom: View toggle button ===
-    var groups = this.storage.getGroups();
-    var hasGroups = Object.keys(groups).length > 0;
+    if (!this._controlsCollapsed) {
+      // === Bottom: View toggle button ===
+      var groups = this.storage.getGroups();
+      var hasGroups = Object.keys(groups).length > 0;
 
-    var bottomDiv = doc.createElement("div");
-    bottomDiv.style.cssText = "display:flex; justify-content:center; margin-top:8px; width:100%; box-sizing:border-box;";
+      var bottomDiv = doc.createElement("div");
+      bottomDiv.style.cssText = "display:flex; justify-content:center; margin-top:8px; width:100%; box-sizing:border-box;";
 
-    if (hasGroups) {
-      var toggleBtn = doc.createElement("button");
-      if (this._viewMode === "personal") {
-        toggleBtn.textContent = "\uD83D\uDC65 Group View";
-        toggleBtn.style.cssText = "padding:4px 16px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#24292f; cursor:pointer; font-size:12px;";
-        toggleBtn.addEventListener("click", function() {
-          self._switchToGroupView();
-        });
+      if (hasGroups) {
+        var toggleBtn = doc.createElement("button");
+        if (this._viewMode === "personal") {
+          toggleBtn.textContent = "\uD83D\uDC65 Group View";
+          toggleBtn.style.cssText = "padding:4px 16px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#24292f; cursor:pointer; font-size:12px;";
+          toggleBtn.addEventListener("click", function() {
+            self._switchToGroupView();
+          });
+        } else {
+          toggleBtn.textContent = "\uD83D\uDC64 My View";
+          toggleBtn.style.cssText = "padding:4px 16px; border:1px solid #1f6feb; border-radius:4px; background:#ddf4ff; color:#1f6feb; cursor:pointer; font-size:12px;";
+          toggleBtn.addEventListener("click", function() {
+            self._switchToPersonalView();
+          });
+        }
+        bottomDiv.appendChild(toggleBtn);
       } else {
-        toggleBtn.textContent = "\uD83D\uDC64 My View";
-        toggleBtn.style.cssText = "padding:4px 16px; border:1px solid #1f6feb; border-radius:4px; background:#ddf4ff; color:#1f6feb; cursor:pointer; font-size:12px;";
-        toggleBtn.addEventListener("click", function() {
-          self._switchToPersonalView();
-        });
+        var hintSpan = doc.createElement("span");
+        hintSpan.style.cssText = "font-size:11px; color:#8b949e;";
+        hintSpan.textContent = "Join a group in Settings to enable Group View";
+        bottomDiv.appendChild(hintSpan);
       }
-      bottomDiv.appendChild(toggleBtn);
-    } else {
-      var hintSpan = doc.createElement("span");
-      hintSpan.style.cssText = "font-size:11px; color:#8b949e;";
-      hintSpan.textContent = "Join a group in Settings to enable Group View";
-      bottomDiv.appendChild(hintSpan);
-    }
 
-    body.appendChild(bottomDiv);
+      body.appendChild(bottomDiv);
+    }
   },
 
   _renderPersonalView(doc, body, year, month) {
+    var showSummary = this._showSummary && !this._controlsCollapsed;
+    var hideLegend = this._controlsCollapsed;
     if (this._calendarMode === "week") {
       var stats = this.storage.getWeeklyStats(this._weekRefDate);
       var summary = this.storage.computeSimpleSummary(stats);
-      var fragment = this.renderer.buildWeeklyHeatmapDOM(doc, stats, summary, this._weekRefDate, this.storage.getUserColor(), null, this._showSummary);
+      var fragment = this.renderer.buildWeeklyHeatmapDOM(doc, stats, summary, this._weekRefDate, this.storage.getUserColor(), null, showSummary, hideLegend);
       body.appendChild(fragment);
     } else {
       var stats2 = this.storage.getMonthlyStats(year, month);
       var summary2 = this.storage.getMonthlySummary(year, month);
-      var fragment2 = this.renderer.buildMonthlyHeatmapDOM(doc, stats2, summary2, year, month, this.storage.getUserColor(), null, this._showSummary);
+      var fragment2 = this.renderer.buildMonthlyHeatmapDOM(doc, stats2, summary2, year, month, this.storage.getUserColor(), null, showSummary, hideLegend);
       body.appendChild(fragment2);
     }
   },
@@ -2296,60 +2340,62 @@ Zotero.ReadingHeatmap = {
     var groupInfo = groups[this._selectedGroupId];
     var groupName = groupInfo ? groupInfo.name : "Group";
 
-    var groupHeader = doc.createElement("div");
-    groupHeader.style.cssText = "font-size:12px; color:#1f6feb; font-weight:600; margin-bottom:6px; text-align:center;";
-    groupHeader.textContent = "\uD83D\uDC65 " + groupName;
-    body.appendChild(groupHeader);
+    if (!this._controlsCollapsed) {
+      var groupHeader = doc.createElement("div");
+      groupHeader.style.cssText = "font-size:12px; color:#1f6feb; font-weight:600; margin-bottom:6px; text-align:center;";
+      groupHeader.textContent = "\uD83D\uDC65 " + groupName;
+      body.appendChild(groupHeader);
 
-    // --- Group view toolbar: Combined/Overlay toggle + Members collapse ---
-    var groupToolbar = doc.createElement("div");
-    groupToolbar.style.cssText = "display:flex; justify-content:center; align-items:center; gap:6px; margin-bottom:8px; flex-wrap:wrap;";
+      // --- Group view toolbar: Combined/Overlay toggle + Members collapse ---
+      var groupToolbar = doc.createElement("div");
+      groupToolbar.style.cssText = "display:flex; justify-content:center; align-items:center; gap:6px; margin-bottom:8px; flex-wrap:wrap;";
 
-    // Combined / Overlay toggle
-    var combinedBtn = doc.createElement("button");
-    combinedBtn.textContent = "Combined";
-    var overlayBtn = doc.createElement("button");
-    overlayBtn.textContent = "Overlay";
+      // Combined / Overlay toggle
+      var combinedBtn = doc.createElement("button");
+      combinedBtn.textContent = "Combined";
+      var overlayBtn = doc.createElement("button");
+      overlayBtn.textContent = "Overlay";
 
-    var activeStyle = "padding:3px 10px; border:1px solid #1f6feb; border-radius:4px; background:#ddf4ff; color:#1f6feb; cursor:pointer; font-size:11px; font-weight:600;";
-    var inactiveStyle = "padding:3px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#57606a; cursor:pointer; font-size:11px;";
+      var activeStyle = "padding:3px 10px; border:1px solid #1f6feb; border-radius:4px; background:#ddf4ff; color:#1f6feb; cursor:pointer; font-size:11px; font-weight:600;";
+      var inactiveStyle = "padding:3px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#57606a; cursor:pointer; font-size:11px;";
 
-    combinedBtn.style.cssText = (this._groupDisplayMode === "combined") ? activeStyle : inactiveStyle;
-    overlayBtn.style.cssText = (this._groupDisplayMode === "overlay") ? activeStyle : inactiveStyle;
+      combinedBtn.style.cssText = (this._groupDisplayMode === "combined") ? activeStyle : inactiveStyle;
+      overlayBtn.style.cssText = (this._groupDisplayMode === "overlay") ? activeStyle : inactiveStyle;
 
-    combinedBtn.addEventListener("click", function() {
-      if (self._groupDisplayMode !== "combined") {
-        self._groupDisplayMode = "combined";
+      combinedBtn.addEventListener("click", function() {
+        if (self._groupDisplayMode !== "combined") {
+          self._groupDisplayMode = "combined";
+          self._refreshPanel();
+        }
+      });
+      overlayBtn.addEventListener("click", function() {
+        if (self._groupDisplayMode !== "overlay") {
+          self._groupDisplayMode = "overlay";
+          self._refreshPanel();
+        }
+      });
+
+      groupToolbar.appendChild(combinedBtn);
+      groupToolbar.appendChild(overlayBtn);
+
+      // Separator
+      var sepSpan = doc.createElement("span");
+      sepSpan.style.cssText = "color:#d0d7de; font-size:14px;";
+      sepSpan.textContent = "|";
+      groupToolbar.appendChild(sepSpan);
+
+      // Members collapse/expand button
+      var membersBtn = doc.createElement("button");
+      membersBtn.textContent = this._showMembers ? "Members \u25B2" : "Members \u25BC";
+      membersBtn.style.cssText = "padding:3px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#57606a; cursor:pointer; font-size:11px;";
+      membersBtn.addEventListener("click", function() {
+        self._showMembers = !self._showMembers;
         self._refreshPanel();
-      }
-    });
-    overlayBtn.addEventListener("click", function() {
-      if (self._groupDisplayMode !== "overlay") {
-        self._groupDisplayMode = "overlay";
-        self._refreshPanel();
-      }
-    });
+      });
+      groupToolbar.appendChild(membersBtn);
 
-    groupToolbar.appendChild(combinedBtn);
-    groupToolbar.appendChild(overlayBtn);
-
-    // Separator
-    var sepSpan = doc.createElement("span");
-    sepSpan.style.cssText = "color:#d0d7de; font-size:14px;";
-    sepSpan.textContent = "|";
-    groupToolbar.appendChild(sepSpan);
-
-    // Members collapse/expand button
-    var membersBtn = doc.createElement("button");
-    membersBtn.textContent = this._showMembers ? "Members \u25B2" : "Members \u25BC";
-    membersBtn.style.cssText = "padding:3px 10px; border:1px solid #d0d7de; border-radius:4px; background:#f6f8fa; color:#57606a; cursor:pointer; font-size:11px;";
-    membersBtn.addEventListener("click", function() {
-      self._showMembers = !self._showMembers;
-      self._refreshPanel();
-    });
-    groupToolbar.appendChild(membersBtn);
-
-    body.appendChild(groupToolbar);
+      body.appendChild(groupToolbar);
+    }
 
     // --- Build member list (shared by both modes) ---
     var colorKeys = ["user1", "user2", "user3"];
@@ -2380,16 +2426,18 @@ Zotero.ReadingHeatmap = {
     }
 
     // --- Render main heatmap based on display mode ---
+    var showSummary = this._showSummary && !this._controlsCollapsed;
+    var hideLegend = this._controlsCollapsed;
     if (this._groupDisplayMode === "overlay") {
       // Overlay mode: single heatmap with multi-color stripes
       var overlayFragment;
       if (this._calendarMode === "week") {
         overlayFragment = this.renderer.buildGroupOverlayWeeklyDOM(
-          doc, groupData, memberList, this._weekRefDate, this._showSummary
+          doc, groupData, memberList, this._weekRefDate, showSummary, hideLegend
         );
       } else {
         overlayFragment = this.renderer.buildGroupOverlayMonthlyDOM(
-          doc, groupData, memberList, year, month, this._showSummary
+          doc, groupData, memberList, year, month, showSummary, hideLegend
         );
       }
       body.appendChild(overlayFragment);
@@ -2399,18 +2447,18 @@ Zotero.ReadingHeatmap = {
       var aggFragment;
       if (this._calendarMode === "week") {
         aggFragment = this.renderer.buildWeeklyHeatmapDOM(
-          doc, groupData.aggregated, aggSummary, this._weekRefDate, "personal", "All Members (Combined)", this._showSummary
+          doc, groupData.aggregated, aggSummary, this._weekRefDate, "personal", this._controlsCollapsed ? null : "All Members (Combined)", showSummary, hideLegend
         );
       } else {
         aggFragment = this.renderer.buildMonthlyHeatmapDOM(
-          doc, groupData.aggregated, aggSummary, year, month, "personal", "All Members (Combined)", this._showSummary
+          doc, groupData.aggregated, aggSummary, year, month, "personal", this._controlsCollapsed ? null : "All Members (Combined)", showSummary, hideLegend
         );
       }
       body.appendChild(aggFragment);
     }
 
     // --- Render individual member heatmaps (if expanded) ---
-    if (this._showMembers) {
+    if (this._showMembers && !this._controlsCollapsed) {
       for (var mi = 0; mi < memberList.length; mi++) {
         var mInfo = memberList[mi];
         var mData = groupData.members[mInfo.deviceId];
