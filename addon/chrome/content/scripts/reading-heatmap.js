@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.7.1
+ * Reading Heatmap - Main Plugin Script v0.7.2
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -60,6 +60,10 @@
  * - Render the empty-selection mini heatmap above Zotero's item-pane deck
  *   instead of replacing the deck selection, preserving Chartero and Zotero
  *   default empty-selection content below it.
+ *
+ * Changes in v0.7.2:
+ * - Make the empty-selection mini heatmap an absolute overlay so it does not
+ *   take space from Zotero's default pane or Chartero's summary iframe.
  */
 
 {
@@ -1336,8 +1340,8 @@ class HeatmapRenderer {
   _wrapMiniSVG(doc, svg, rows) {
     var fragment = doc.createDocumentFragment();
     var wrapper = doc.createElement("div");
-    var maxWidth = rows > 1 ? "156px" : "132px";
-    wrapper.style.cssText = "width:100%; max-width:" + maxWidth + "; margin:0 auto 8px;";
+    var maxWidth = rows > 1 ? "72px" : "96px";
+    wrapper.style.cssText = "width:100%; max-width:" + maxWidth + "; margin:0 auto;";
     svg.setAttribute("width", "100%");
     svg.removeAttribute("height");
     svg.style.cssText = "display:block; width:100%; height:auto;";
@@ -3105,7 +3109,13 @@ Zotero.ReadingHeatmap = {
   _removeEmptySelectionNodes(doc) {
     var mini = doc.getElementById(this._emptySelectionMiniID);
     if (mini && mini.parentNode) {
+      var parent = mini.parentNode;
+      var touchedPosition = mini.getAttribute("data-reading-heatmap-position-set") === "true";
+      var previousPosition = mini.getAttribute("data-reading-heatmap-parent-position") || "";
       mini.parentNode.removeChild(mini);
+      if (touchedPosition && parent && parent.style) {
+        parent.style.position = previousPosition;
+      }
     }
 
     var legacyPanel = doc.getElementById(this._emptySelectionPanelID);
@@ -3144,7 +3154,12 @@ Zotero.ReadingHeatmap = {
       panel.setAttribute("id", this._emptySelectionMiniID);
       panel.setAttribute("class", "reading-heatmap-empty-mini-bar");
       panel.setAttribute("pack", "start");
-      panel.style.cssText = "width:100%; box-sizing:border-box; padding:8px 8px 6px; border-bottom:1px solid #d0d7de; flex:0 0 auto;";
+      if (!parent.style.position || parent.style.position === "static") {
+        panel.setAttribute("data-reading-heatmap-position-set", "true");
+        panel.setAttribute("data-reading-heatmap-parent-position", parent.style.position || "");
+        parent.style.position = "relative";
+      }
+      panel.style.cssText = "position:absolute; top:0; left:0; right:0; z-index:20; width:100%; box-sizing:border-box; padding:4px 8px 3px; border-bottom:1px solid rgba(208,215,222,0.9); background:rgba(246,248,250,0.94); pointer-events:none; max-height:76px; overflow:hidden;";
       parent.insertBefore(panel, content);
     } else if (panel.parentNode !== parent || panel.nextSibling !== content) {
       parent.insertBefore(panel, content);

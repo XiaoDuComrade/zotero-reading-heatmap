@@ -142,6 +142,11 @@ The main plugin script (`reading-heatmap.js`) is organized into six sections:
 - Fixed empty-selection rendering so the mini heatmap appears above Zotero's normal item-pane deck instead of replacing it
 - Preserved Chartero's summary iframe and Zotero's default "items in this view" content below the mini heatmap
 
+### v0.7.2
+
+- Changed the empty-selection mini heatmap to an absolute overlay so it no longer takes layout space from Zotero's default side pane or Chartero's summary iframe
+- Reduced the mini heatmap size further for a lighter empty-selection header
+
 ### v0.6.2
 
 - User color (userColor) now syncs to the server: each member's personalized color is uploaded during device registration and returned in group data downloads
