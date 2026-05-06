@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.7.2
+ * Reading Heatmap - Main Plugin Script v0.7.3
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -64,6 +64,10 @@
  * Changes in v0.7.2:
  * - Make the empty-selection mini heatmap an absolute overlay so it does not
  *   take space from Zotero's default pane or Chartero's summary iframe.
+ *
+ * Changes in v0.7.3:
+ * - Temporarily disable automatic empty-selection mini heatmap mounting while
+ *   keeping the mini heatmap renderer available for future sidebar work.
  */
 
 {
@@ -2248,6 +2252,7 @@ Zotero.ReadingHeatmap = {
   _panelBodies: new Set(),
   _emptySelectionPanelID: "reading-heatmap-empty-selection-panel",
   _emptySelectionMiniID: "reading-heatmap-empty-mini-bar",
+  _emptySelectionEnabled: false,
   _emptyPanelListeners: new Map(),
   _emptyPanelRenderSeq: 0,
   _currentYear: null,
@@ -2984,6 +2989,11 @@ Zotero.ReadingHeatmap = {
   _bindEmptySelectionPanel(win) {
     if (!win || this._emptyPanelListeners.has(win)) return;
 
+    if (!this._emptySelectionEnabled) {
+      this._hideEmptySelectionPanel(win);
+      return;
+    }
+
     var self = this;
     var state = {
       itemsView: null,
@@ -3077,6 +3087,7 @@ Zotero.ReadingHeatmap = {
   },
 
   _refreshEmptySelectionPanels() {
+    if (!this._emptySelectionEnabled) return;
     var self = this;
     this._emptyPanelListeners.forEach(function(state, win) {
       self._queueEmptySelectionPanelUpdate(win);
@@ -3085,6 +3096,10 @@ Zotero.ReadingHeatmap = {
 
   async _updateEmptySelectionPanel(win) {
     try {
+      if (!this._emptySelectionEnabled) {
+        this._hideEmptySelectionPanel(win);
+        return;
+      }
       if (!this._shouldShowEmptySelectionPanel(win)) {
         this._hideEmptySelectionPanel(win);
         return;
