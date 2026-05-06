@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.6.13
+ * Reading Heatmap - Main Plugin Script v0.6.14
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -51,6 +51,10 @@
  * Changes in v0.6.13:
  * - Moved the compact controls toggle into Zotero's native section header,
  *   next to the built-in section collapse button.
+ *
+ * Changes in v0.6.14:
+ * - Added a Chartero-style empty-selection side pane that shows a minimal
+ *   mini heatmap when no library item is selected.
  */
 
 {
@@ -1324,6 +1328,133 @@ class HeatmapRenderer {
     return fragment;
   }
 
+  _wrapMiniSVG(doc, svg, rows) {
+    var fragment = doc.createDocumentFragment();
+    var wrapper = doc.createElement("div");
+    var maxWidth = rows > 1 ? "156px" : "132px";
+    wrapper.style.cssText = "width:100%; max-width:" + maxWidth + "; margin:0 auto 8px;";
+    svg.setAttribute("width", "100%");
+    svg.removeAttribute("height");
+    svg.style.cssText = "display:block; width:100%; height:auto;";
+    wrapper.appendChild(svg);
+    fragment.appendChild(wrapper);
+    return fragment;
+  }
+
+  buildMiniMonthlyHeatmapDOM(doc, stats, year, month, colorScheme) {
+    colorScheme = colorScheme || "personal";
+    var colors = this.getColorScale(colorScheme);
+    var svgNS = "http://www.w3.org/2000/svg";
+    var cellSize = 8;
+    var gap = 2;
+    var totalCellSize = cellSize + gap;
+    var daysInMonth = new Date(year, month, 0).getDate();
+    var firstDayOfWeek = new Date(year, month - 1, 1).getDay();
+    var rows = Math.ceil((daysInMonth + firstDayOfWeek) / 7);
+    var svgWidth = 7 * totalCellSize - gap;
+    var svgHeight = rows * totalCellSize - gap;
+
+    var values = [];
+    for (var key in stats) {
+      if (stats[key].totalSeconds > 0) values.push(stats[key].totalSeconds);
+    }
+    var maxValue = values.length > 0 ? Math.max.apply(null, values) : 1;
+    var todayStr = this.formatDate(new Date());
+
+    var svg = doc.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
+
+    for (var day = 1; day <= daysInMonth; day++) {
+      var cellDate = new Date(year, month - 1, day);
+      var dayOfWeek = cellDate.getDay();
+      var weekRow = Math.floor((day - 1 + firstDayOfWeek) / 7);
+      var dateStr = year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+      var dayData = stats[dateStr] || { totalSeconds: 0 };
+      var isFuture = dateStr > todayStr;
+      var level = isFuture ? 0 : this.getColorLevel(dayData.totalSeconds, maxValue);
+      var color = isFuture ? "#f6f8fa" : colors[level];
+      var x = dayOfWeek * totalCellSize;
+      var y = weekRow * totalCellSize;
+
+      var rect = doc.createElementNS(svgNS, "rect");
+      rect.setAttribute("x", String(x));
+      rect.setAttribute("y", String(y));
+      rect.setAttribute("width", String(cellSize));
+      rect.setAttribute("height", String(cellSize));
+      rect.setAttribute("rx", "2");
+      rect.setAttribute("ry", "2");
+      rect.setAttribute("fill", color);
+      if (dateStr === todayStr) {
+        rect.setAttribute("stroke", "#1f6feb");
+        rect.setAttribute("stroke-width", "1.2");
+      }
+      if (!isFuture) {
+        var titleEl = doc.createElementNS(svgNS, "title");
+        titleEl.textContent = dateStr + " | " + this.formatDuration(dayData.totalSeconds);
+        rect.appendChild(titleEl);
+      }
+      svg.appendChild(rect);
+    }
+
+    return this._wrapMiniSVG(doc, svg, rows);
+  }
+
+  buildMiniWeeklyHeatmapDOM(doc, stats, refDate, colorScheme) {
+    colorScheme = colorScheme || "personal";
+    var colors = this.getColorScale(colorScheme);
+    var svgNS = "http://www.w3.org/2000/svg";
+    var cellSize = 10;
+    var gap = 3;
+    var totalCellSize = cellSize + gap;
+    var svgWidth = 7 * totalCellSize - gap;
+    var svgHeight = cellSize;
+    var todayStr = this.formatDate(new Date());
+
+    var values = [];
+    for (var key in stats) {
+      if (stats[key].totalSeconds > 0) values.push(stats[key].totalSeconds);
+    }
+    var maxValue = values.length > 0 ? Math.max.apply(null, values) : 1;
+
+    var dayOfRef = refDate.getDay();
+    var startOfWeek = new Date(refDate);
+    startOfWeek.setDate(startOfWeek.getDate() - dayOfRef);
+
+    var svg = doc.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
+
+    for (var i = 0; i < 7; i++) {
+      var cellDate = new Date(startOfWeek);
+      cellDate.setDate(cellDate.getDate() + i);
+      var dateStr = this.formatDate(cellDate);
+      var dayData = stats[dateStr] || { totalSeconds: 0 };
+      var isFuture = dateStr > todayStr;
+      var level = isFuture ? 0 : this.getColorLevel(dayData.totalSeconds, maxValue);
+      var color = isFuture ? "#f6f8fa" : colors[level];
+
+      var rect = doc.createElementNS(svgNS, "rect");
+      rect.setAttribute("x", String(i * totalCellSize));
+      rect.setAttribute("y", "0");
+      rect.setAttribute("width", String(cellSize));
+      rect.setAttribute("height", String(cellSize));
+      rect.setAttribute("rx", "2");
+      rect.setAttribute("ry", "2");
+      rect.setAttribute("fill", color);
+      if (dateStr === todayStr) {
+        rect.setAttribute("stroke", "#1f6feb");
+        rect.setAttribute("stroke-width", "1.2");
+      }
+      if (!isFuture) {
+        var titleEl = doc.createElementNS(svgNS, "title");
+        titleEl.textContent = dateStr + " | " + this.formatDuration(dayData.totalSeconds);
+        rect.appendChild(titleEl);
+      }
+      svg.appendChild(rect);
+    }
+
+    return this._wrapMiniSVG(doc, svg, 1);
+  }
+
   /**
    * Resolve a color scheme to a 5-level color array.
    */
@@ -1333,6 +1464,187 @@ class HeatmapRenderer {
       return this.getColorScale(colorScheme);
     }
     return this.COLOR_SCALES[colorScheme] || this.COLOR_SCALES.personal;
+  }
+
+  _prepareGroupOverlayScales(groupData, memberList) {
+    var memberColors = [];
+    var memberMaxValues = [];
+    for (var mi = 0; mi < memberList.length; mi++) {
+      memberColors.push(this._resolveColors(memberList[mi].colorScheme));
+      var mMax = 0;
+      var memberData = groupData.members[memberList[mi].deviceId];
+      var mStats = memberData && memberData.stats ? memberData.stats : {};
+      for (var mKey in mStats) {
+        if (mStats[mKey].totalSeconds > mMax) mMax = mStats[mKey].totalSeconds;
+      }
+      memberMaxValues.push(mMax || 1);
+    }
+    return { colors: memberColors, maxValues: memberMaxValues };
+  }
+
+  buildGroupOverlayMiniMonthlyDOM(doc, groupData, memberList, year, month) {
+    var self = this;
+    var svgNS = "http://www.w3.org/2000/svg";
+    var cellSize = 8;
+    var gap = 2;
+    var totalCellSize = cellSize + gap;
+    var daysInMonth = new Date(year, month, 0).getDate();
+    var firstDayOfWeek = new Date(year, month - 1, 1).getDay();
+    var rows = Math.ceil((daysInMonth + firstDayOfWeek) / 7);
+    var svgWidth = 7 * totalCellSize - gap;
+    var svgHeight = rows * totalCellSize - gap;
+    var todayStr = this.formatDate(new Date());
+    var scales = this._prepareGroupOverlayScales(groupData, memberList);
+    var memberColors = scales.colors;
+    var memberMaxValues = scales.maxValues;
+
+    var svg = doc.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
+
+    for (var day = 1; day <= daysInMonth; day++) {
+      var cellDate = new Date(year, month - 1, day);
+      var dayOfWeek = cellDate.getDay();
+      var weekRow = Math.floor((day - 1 + firstDayOfWeek) / 7);
+      var dateStr = year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+      var isFuture = dateStr > todayStr;
+      var x = dayOfWeek * totalCellSize;
+      var y = weekRow * totalCellSize;
+
+      var bgRect = doc.createElementNS(svgNS, "rect");
+      bgRect.setAttribute("x", String(x));
+      bgRect.setAttribute("y", String(y));
+      bgRect.setAttribute("width", String(cellSize));
+      bgRect.setAttribute("height", String(cellSize));
+      bgRect.setAttribute("rx", "2");
+      bgRect.setAttribute("ry", "2");
+      bgRect.setAttribute("fill", isFuture ? "#f6f8fa" : "#ebedf0");
+      svg.appendChild(bgRect);
+
+      if (!isFuture) {
+        var activeMembers = [];
+        var tooltipParts = [dateStr];
+        for (var mi = 0; mi < memberList.length; mi++) {
+          var mInfo = memberList[mi];
+          var memberData = groupData.members[mInfo.deviceId];
+          var mDayData = memberData && memberData.stats ? memberData.stats[dateStr] : null;
+          if (mDayData && mDayData.totalSeconds > 0) {
+            var mLevel = self.getColorLevel(mDayData.totalSeconds, memberMaxValues[mi]);
+            activeMembers.push({ index: mi, level: mLevel, seconds: mDayData.totalSeconds });
+            tooltipParts.push(mInfo.userName + ": " + self.formatDuration(mDayData.totalSeconds));
+          }
+        }
+        this._appendOverlayStripes(doc, svg, x, y, cellSize, cellSize, activeMembers, memberColors);
+
+        var tooltipRect = doc.createElementNS(svgNS, "rect");
+        tooltipRect.setAttribute("x", String(x));
+        tooltipRect.setAttribute("y", String(y));
+        tooltipRect.setAttribute("width", String(cellSize));
+        tooltipRect.setAttribute("height", String(cellSize));
+        tooltipRect.setAttribute("fill", "transparent");
+        var titleEl = doc.createElementNS(svgNS, "title");
+        titleEl.textContent = tooltipParts.join("\n");
+        tooltipRect.appendChild(titleEl);
+        svg.appendChild(tooltipRect);
+      }
+
+      if (dateStr === todayStr) {
+        var todayRect = doc.createElementNS(svgNS, "rect");
+        todayRect.setAttribute("x", String(x));
+        todayRect.setAttribute("y", String(y));
+        todayRect.setAttribute("width", String(cellSize));
+        todayRect.setAttribute("height", String(cellSize));
+        todayRect.setAttribute("rx", "2");
+        todayRect.setAttribute("ry", "2");
+        todayRect.setAttribute("fill", "none");
+        todayRect.setAttribute("stroke", "#1f6feb");
+        todayRect.setAttribute("stroke-width", "1.2");
+        svg.appendChild(todayRect);
+      }
+    }
+
+    return this._wrapMiniSVG(doc, svg, rows);
+  }
+
+  buildGroupOverlayMiniWeeklyDOM(doc, groupData, memberList, refDate) {
+    var self = this;
+    var svgNS = "http://www.w3.org/2000/svg";
+    var cellSize = 10;
+    var gap = 3;
+    var totalCellSize = cellSize + gap;
+    var svgWidth = 7 * totalCellSize - gap;
+    var svgHeight = cellSize;
+    var todayStr = this.formatDate(new Date());
+    var scales = this._prepareGroupOverlayScales(groupData, memberList);
+    var memberColors = scales.colors;
+    var memberMaxValues = scales.maxValues;
+
+    var dayOfRef = refDate.getDay();
+    var startOfWeek = new Date(refDate);
+    startOfWeek.setDate(startOfWeek.getDate() - dayOfRef);
+
+    var svg = doc.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
+
+    for (var i = 0; i < 7; i++) {
+      var cellDate = new Date(startOfWeek);
+      cellDate.setDate(cellDate.getDate() + i);
+      var dateStr = this.formatDate(cellDate);
+      var isFuture = dateStr > todayStr;
+      var x = i * totalCellSize;
+
+      var bgRect = doc.createElementNS(svgNS, "rect");
+      bgRect.setAttribute("x", String(x));
+      bgRect.setAttribute("y", "0");
+      bgRect.setAttribute("width", String(cellSize));
+      bgRect.setAttribute("height", String(cellSize));
+      bgRect.setAttribute("rx", "2");
+      bgRect.setAttribute("ry", "2");
+      bgRect.setAttribute("fill", isFuture ? "#f6f8fa" : "#ebedf0");
+      svg.appendChild(bgRect);
+
+      if (!isFuture) {
+        var activeMembers = [];
+        var tooltipParts = [dateStr];
+        for (var mi = 0; mi < memberList.length; mi++) {
+          var mInfo = memberList[mi];
+          var memberData = groupData.members[mInfo.deviceId];
+          var mDayData = memberData && memberData.stats ? memberData.stats[dateStr] : null;
+          if (mDayData && mDayData.totalSeconds > 0) {
+            var mLevel = self.getColorLevel(mDayData.totalSeconds, memberMaxValues[mi]);
+            activeMembers.push({ index: mi, level: mLevel, seconds: mDayData.totalSeconds });
+            tooltipParts.push(mInfo.userName + ": " + self.formatDuration(mDayData.totalSeconds));
+          }
+        }
+        this._appendOverlayStripes(doc, svg, x, 0, cellSize, cellSize, activeMembers, memberColors);
+
+        var tooltipRect = doc.createElementNS(svgNS, "rect");
+        tooltipRect.setAttribute("x", String(x));
+        tooltipRect.setAttribute("y", "0");
+        tooltipRect.setAttribute("width", String(cellSize));
+        tooltipRect.setAttribute("height", String(cellSize));
+        tooltipRect.setAttribute("fill", "transparent");
+        var titleEl = doc.createElementNS(svgNS, "title");
+        titleEl.textContent = tooltipParts.join("\n");
+        tooltipRect.appendChild(titleEl);
+        svg.appendChild(tooltipRect);
+      }
+
+      if (dateStr === todayStr) {
+        var todayRect = doc.createElementNS(svgNS, "rect");
+        todayRect.setAttribute("x", String(x));
+        todayRect.setAttribute("y", "0");
+        todayRect.setAttribute("width", String(cellSize));
+        todayRect.setAttribute("height", String(cellSize));
+        todayRect.setAttribute("rx", "2");
+        todayRect.setAttribute("ry", "2");
+        todayRect.setAttribute("fill", "none");
+        todayRect.setAttribute("stroke", "#1f6feb");
+        todayRect.setAttribute("stroke-width", "1.2");
+        svg.appendChild(todayRect);
+      }
+    }
+
+    return this._wrapMiniSVG(doc, svg, 1);
   }
 
   /**
@@ -1925,6 +2237,9 @@ Zotero.ReadingHeatmap = {
   _sectionPaneID: "reading-heatmap-panel",
   _sectionFullPaneID: "reading-heatmap@zotero-plugin.com-reading-heatmap-panel",
   _panelBodies: new Set(),
+  _emptySelectionPanelID: "reading-heatmap-empty-selection-panel",
+  _emptyPanelListeners: new Map(),
+  _emptyPanelRenderSeq: 0,
   _currentYear: null,
   _currentMonth: null,
   _viewMode: "personal",       // "personal" or "group"
@@ -2004,6 +2319,12 @@ Zotero.ReadingHeatmap = {
       Zotero.debug("[ReadingHeatmap] Prefs pane registered");
     } catch (e) {
       Zotero.debug("[ReadingHeatmap] Prefs register error: " + e);
+    }
+
+    try {
+      this.onMainWindowLoad(Zotero.getMainWindow());
+    } catch (e) {
+      Zotero.debug("[ReadingHeatmap] Main window bind error: " + e);
     }
 
     Zotero.debug("[ReadingHeatmap] Fully initialized v" + version);
@@ -2433,33 +2754,8 @@ Zotero.ReadingHeatmap = {
       body.appendChild(groupToolbar);
     }
 
-    // --- Build member list (shared by both modes) ---
-    var colorKeys = ["user1", "user2", "user3"];
-    var colorIndex = 0;
-    var myDeviceId = this.storage.getDeviceId();
-    var myColor = this.storage.getUserColor();
-    var memberList = [];
-
-    for (var deviceId in groupData.members) {
-      var member = groupData.members[deviceId];
-      var isMe = (deviceId === myDeviceId);
-      // Priority: for self use local userColor; for others use server-synced userColor; fallback to preset palette
-      var memberColor;
-      if (isMe) {
-        memberColor = myColor;
-      } else if (groupData.members[deviceId].userColor && /^#[0-9A-Fa-f]{6}$/.test(groupData.members[deviceId].userColor)) {
-        memberColor = groupData.members[deviceId].userColor;
-      } else {
-        memberColor = colorKeys[colorIndex % colorKeys.length];
-      }
-      memberList.push({
-        deviceId: deviceId,
-        userName: member.userName,
-        colorScheme: memberColor,
-        isMe: isMe,
-      });
-      if (!isMe) colorIndex++;
-    }
+    // --- Build member list (shared by all group heatmap modes) ---
+    var memberList = this._buildGroupMemberList(groupData);
 
     // --- Render main heatmap based on display mode ---
     var showSummary = this._showSummary && !this._controlsCollapsed;
@@ -2519,6 +2815,36 @@ Zotero.ReadingHeatmap = {
         body.appendChild(memberFragment);
       }
     }
+  },
+
+  _buildGroupMemberList(groupData) {
+    var colorKeys = ["user1", "user2", "user3"];
+    var colorIndex = 0;
+    var myDeviceId = this.storage.getDeviceId();
+    var myColor = this.storage.getUserColor();
+    var memberList = [];
+
+    for (var deviceId in groupData.members) {
+      var member = groupData.members[deviceId];
+      var isMe = (deviceId === myDeviceId);
+      var memberColor;
+      if (isMe) {
+        memberColor = myColor;
+      } else if (member.userColor && /^#[0-9A-Fa-f]{6}$/.test(member.userColor)) {
+        memberColor = member.userColor;
+      } else {
+        memberColor = colorKeys[colorIndex % colorKeys.length];
+      }
+      memberList.push({
+        deviceId: deviceId,
+        userName: member.userName,
+        colorScheme: memberColor,
+        isMe: isMe,
+      });
+      if (!isMe) colorIndex++;
+    }
+
+    return memberList;
   },
 
   _switchToGroupView() {
@@ -2598,6 +2924,269 @@ Zotero.ReadingHeatmap = {
     this._refreshPanel();
   },
 
+  _getZoteroPaneForWindow(win) {
+    if (!win) return null;
+    if (win.ZoteroPane_Local) return win.ZoteroPane_Local;
+    if (win.ZoteroPane) return win.ZoteroPane;
+    try {
+      if (Zotero.getActiveZoteroPane) return Zotero.getActiveZoteroPane();
+    } catch (e) {}
+    return null;
+  },
+
+  _isLibraryTabActive(win) {
+    try {
+      if (win && win.Zotero_Tabs && win.Zotero_Tabs.selectedType &&
+          win.Zotero_Tabs.selectedType !== "library") {
+        return false;
+      }
+    } catch (e) {}
+    return true;
+  },
+
+  _getSelectedItemCount(win) {
+    var pane = this._getZoteroPaneForWindow(win);
+    if (!pane) return null;
+
+    try {
+      if (pane.getSelectedItems) {
+        var items = pane.getSelectedItems(true) || [];
+        return items.length || 0;
+      }
+    } catch (e) {}
+
+    try {
+      if (pane.itemsView && pane.itemsView.selection &&
+          typeof pane.itemsView.selection.count === "number") {
+        return pane.itemsView.selection.count;
+      }
+    } catch (e2) {}
+
+    return null;
+  },
+
+  _shouldShowEmptySelectionPanel(win) {
+    if (!this._isLibraryTabActive(win)) return false;
+    var count = this._getSelectedItemCount(win);
+    return count === 0;
+  },
+
+  _bindEmptySelectionPanel(win) {
+    if (!win || this._emptyPanelListeners.has(win)) return;
+
+    var self = this;
+    var state = {
+      itemsView: null,
+      collectionsView: null,
+      retryTimer: null,
+      updateTimer: null,
+      attempts: 0,
+    };
+
+    state.handler = function() {
+      self._queueEmptySelectionPanelUpdate(win);
+    };
+
+    state.attach = function() {
+      var pane = self._getZoteroPaneForWindow(win);
+      if (!pane) return false;
+      var attached = false;
+
+      try {
+        if (!state.itemsView && pane.itemsView && pane.itemsView.onSelect &&
+            pane.itemsView.onSelect.addListener) {
+          pane.itemsView.onSelect.addListener(state.handler);
+          state.itemsView = pane.itemsView;
+          attached = true;
+        }
+      } catch (e) {
+        Zotero.debug("[ReadingHeatmap] Empty panel itemsView listener error: " + e);
+      }
+
+      try {
+        if (!state.collectionsView && pane.collectionsView && pane.collectionsView.onSelect &&
+            pane.collectionsView.onSelect.addListener) {
+          pane.collectionsView.onSelect.addListener(state.handler);
+          state.collectionsView = pane.collectionsView;
+          attached = true;
+        }
+      } catch (e2) {
+        Zotero.debug("[ReadingHeatmap] Empty panel collectionsView listener error: " + e2);
+      }
+
+      return attached || !!state.itemsView || !!state.collectionsView;
+    };
+
+    this._emptyPanelListeners.set(win, state);
+
+    if (!state.attach()) {
+      state.retryTimer = _rhSetInterval(function() {
+        state.attempts++;
+        if (state.attach() || state.attempts > 20) {
+          _rhClearInterval(state.retryTimer);
+          state.retryTimer = null;
+        }
+        self._queueEmptySelectionPanelUpdate(win);
+      }, 500);
+    }
+
+    this._queueEmptySelectionPanelUpdate(win);
+  },
+
+  _unbindEmptySelectionPanel(win) {
+    var state = this._emptyPanelListeners.get(win);
+    if (!state) return;
+
+    try {
+      if (state.itemsView && state.itemsView.onSelect && state.itemsView.onSelect.removeListener) {
+        state.itemsView.onSelect.removeListener(state.handler);
+      }
+    } catch (e) {}
+
+    try {
+      if (state.collectionsView && state.collectionsView.onSelect && state.collectionsView.onSelect.removeListener) {
+        state.collectionsView.onSelect.removeListener(state.handler);
+      }
+    } catch (e2) {}
+
+    if (state.retryTimer) _rhClearInterval(state.retryTimer);
+    if (state.updateTimer) _rhClearTimeout(state.updateTimer);
+    this._hideEmptySelectionPanel(win);
+    this._emptyPanelListeners.delete(win);
+  },
+
+  _queueEmptySelectionPanelUpdate(win) {
+    var state = this._emptyPanelListeners.get(win);
+    if (!state) return;
+    var self = this;
+    if (state.updateTimer) _rhClearTimeout(state.updateTimer);
+    state.updateTimer = _rhSetTimeout(function() {
+      state.updateTimer = null;
+      self._updateEmptySelectionPanel(win);
+    }, 0);
+  },
+
+  _refreshEmptySelectionPanels() {
+    var self = this;
+    this._emptyPanelListeners.forEach(function(state, win) {
+      self._queueEmptySelectionPanelUpdate(win);
+    });
+  },
+
+  async _updateEmptySelectionPanel(win) {
+    try {
+      if (!this._shouldShowEmptySelectionPanel(win)) {
+        this._hideEmptySelectionPanel(win);
+        return;
+      }
+      await this._showEmptySelectionPanel(win);
+    } catch (e) {
+      Zotero.debug("[ReadingHeatmap] Empty selection panel update error: " + e);
+    }
+  },
+
+  _hideEmptySelectionPanel(win) {
+    this._emptyPanelRenderSeq++;
+    try {
+      var doc = win && win.document;
+      if (!doc) return;
+      var panel = doc.getElementById(this._emptySelectionPanelID);
+      if (panel && panel.parentNode) {
+        panel.parentNode.removeChild(panel);
+      }
+    } catch (e) {
+      Zotero.debug("[ReadingHeatmap] Empty selection panel hide error: " + e);
+    }
+  },
+
+  async _showEmptySelectionPanel(win) {
+    var doc = win && win.document;
+    if (!doc) return;
+    var content = doc.getElementById("zotero-item-pane-content");
+    if (!content) return;
+
+    var seq = ++this._emptyPanelRenderSeq;
+    var panel = doc.getElementById(this._emptySelectionPanelID);
+    if (!panel) {
+      panel = doc.createXULElement ? doc.createXULElement("vbox") : doc.createElement("div");
+      panel.setAttribute("id", this._emptySelectionPanelID);
+      panel.setAttribute("flex", "1");
+      panel.style.cssText = "width:100%; height:100%; overflow:auto; box-sizing:border-box; padding:8px;";
+      content.appendChild(panel);
+    }
+
+    content.selectedPanel = panel;
+    while (panel.firstChild) {
+      panel.removeChild(panel.firstChild);
+    }
+
+    var body = doc.createElement("div");
+    body.style.cssText = "width:100%; box-sizing:border-box;";
+    panel.appendChild(body);
+
+    await this._renderEmptySelectionView(doc, body);
+
+    if (seq !== this._emptyPanelRenderSeq || !this._shouldShowEmptySelectionPanel(win)) {
+      this._hideEmptySelectionPanel(win);
+      return;
+    }
+    content.selectedPanel = panel;
+  },
+
+  async _renderEmptySelectionView(doc, body) {
+    body.style.cssText = "width:100%; min-height:100%; box-sizing:border-box;";
+
+    var mini = doc.createElement("div");
+    mini.setAttribute("id", "reading-heatmap-empty-mini");
+    mini.style.cssText = "width:100%; box-sizing:border-box; padding:6px 2px 8px; border-bottom:1px solid #d0d7de; margin-bottom:8px;";
+    body.appendChild(mini);
+
+    await this._renderCurrentMiniHeatmap(doc, mini);
+
+    var extra = doc.createElement("div");
+    extra.setAttribute("id", "reading-heatmap-empty-extra-content");
+    extra.style.cssText = "width:100%; min-height:80px; box-sizing:border-box;";
+    body.appendChild(extra);
+  },
+
+  async _renderCurrentMiniHeatmap(doc, body) {
+    if (!this.storage || !this.renderer) return;
+    var year = this._currentYear;
+    var month = this._currentMonth;
+
+    if (this._viewMode === "group" && this._selectedGroupId && this.sync) {
+      var groupData = null;
+      if (this._calendarMode === "week") {
+        groupData = await this.sync.getGroupWeeklyData(this._selectedGroupId, this._weekRefDate);
+      } else {
+        groupData = await this.sync.getGroupMonthlyData(this._selectedGroupId, year, month);
+      }
+      if (!groupData) return;
+
+      var memberList = this._buildGroupMemberList(groupData);
+      if (this._groupDisplayMode === "overlay") {
+        if (this._calendarMode === "week") {
+          body.appendChild(this.renderer.buildGroupOverlayMiniWeeklyDOM(doc, groupData, memberList, this._weekRefDate));
+        } else {
+          body.appendChild(this.renderer.buildGroupOverlayMiniMonthlyDOM(doc, groupData, memberList, year, month));
+        }
+      } else if (this._calendarMode === "week") {
+        body.appendChild(this.renderer.buildMiniWeeklyHeatmapDOM(doc, groupData.aggregated, this._weekRefDate, "personal"));
+      } else {
+        body.appendChild(this.renderer.buildMiniMonthlyHeatmapDOM(doc, groupData.aggregated, year, month, "personal"));
+      }
+      return;
+    }
+
+    if (this._calendarMode === "week") {
+      var weekStats = this.storage.getWeeklyStats(this._weekRefDate);
+      body.appendChild(this.renderer.buildMiniWeeklyHeatmapDOM(doc, weekStats, this._weekRefDate, this.storage.getUserColor()));
+    } else {
+      var monthStats = this.storage.getMonthlyStats(year, month);
+      body.appendChild(this.renderer.buildMiniMonthlyHeatmapDOM(doc, monthStats, year, month, this.storage.getUserColor()));
+    }
+  },
+
   _registerPrefsPane() {
     Zotero.PreferencePanes.register({
       pluginID: "reading-heatmap@zotero-plugin.com",
@@ -2621,6 +3210,7 @@ Zotero.ReadingHeatmap = {
         Zotero.debug("[ReadingHeatmap] Refresh error: " + e);
       }
     });
+    this._refreshEmptySelectionPanels();
   },
 
   _showImportDialog() {
@@ -2786,16 +3376,23 @@ Zotero.ReadingHeatmap = {
 
   onMainWindowLoad(win) {
     if (this.tracker) this.tracker.onMainWindowLoad(win);
+    this._bindEmptySelectionPanel(win);
   },
 
   onMainWindowUnload(win) {
     if (this.tracker) this.tracker.onMainWindowUnload(win);
+    this._unbindEmptySelectionPanel(win);
   },
 
   shutdown() {
     if (this.tracker) this.tracker.shutdown();
     if (this.sync) this.sync.shutdown();
     if (this.storage) this.storage.forceSave();
+
+    var wins = Array.from(this._emptyPanelListeners.keys());
+    for (var i = 0; i < wins.length; i++) {
+      this._unbindEmptySelectionPanel(wins[i]);
+    }
 
     this._unregisterSectionIfPresent();
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Reading Heatmap",
-  "version": "0.6.13",
+  "version": "0.6.14",
   "description": "Track Zotero active-window time and visualize it as a GitHub-style heatmap. Week/month view toggle, summary toggle, group sync with responsive legend, and Zotero Style data import.",
   "author": "Manus AI",
   "homepage_url": "https://github.com/zotero-reading-heatmap",
