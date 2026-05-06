@@ -44,7 +44,7 @@ A Zotero plugin that automatically tracks your reading activity and visualizes i
 
 After installation, the Reading Heatmap panel appears in Zotero's right side panel. Select any item in your library to see the heatmap.
 
-When no item is selected, the right side panel still keeps a minimal Reading Heatmap area visible. It shows a small dense version of the current personal or group calendar view without labels or legends, and leaves space below for future side-panel content.
+When no item is selected, the right side panel still keeps a minimal Reading Heatmap area visible. It shows a small dense version of the current personal or group calendar view without labels or legends, while preserving Zotero's default empty-selection content or other plugin content below it.
 
 **View Controls** are located at the top of the panel. Use the **Week / Month** toggle to switch between calendar modes. Use the **Summary** button to show or hide the statistics bar (Total, Active, Streak, Best).
 
@@ -136,6 +136,11 @@ The main plugin script (`reading-heatmap.js`) is organized into six sections:
 
 - Added a Chartero-style empty-selection side pane so Reading Heatmap can remain visible when no library item is selected
 - The empty-selection pane shows a mini dense heatmap matching the current personal/group and combined/overlay view, without visible labels or legends
+
+### v0.7.1
+
+- Fixed empty-selection rendering so the mini heatmap appears above Zotero's normal item-pane deck instead of replacing it
+- Preserved Chartero's summary iframe and Zotero's default "items in this view" content below the mini heatmap
 
 ### v0.6.2
 

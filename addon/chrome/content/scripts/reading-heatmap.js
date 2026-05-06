@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.6.14
+ * Reading Heatmap - Main Plugin Script v0.7.1
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -55,6 +55,11 @@
  * Changes in v0.6.14:
  * - Added a Chartero-style empty-selection side pane that shows a minimal
  *   mini heatmap when no library item is selected.
+ *
+ * Changes in v0.7.1:
+ * - Render the empty-selection mini heatmap above Zotero's item-pane deck
+ *   instead of replacing the deck selection, preserving Chartero and Zotero
+ *   default empty-selection content below it.
  */
 
 {
@@ -2238,6 +2243,7 @@ Zotero.ReadingHeatmap = {
   _sectionFullPaneID: "reading-heatmap@zotero-plugin.com-reading-heatmap-panel",
   _panelBodies: new Set(),
   _emptySelectionPanelID: "reading-heatmap-empty-selection-panel",
+  _emptySelectionMiniID: "reading-heatmap-empty-mini-bar",
   _emptyPanelListeners: new Map(),
   _emptyPanelRenderSeq: 0,
   _currentYear: null,
@@ -3090,12 +3096,34 @@ Zotero.ReadingHeatmap = {
     try {
       var doc = win && win.document;
       if (!doc) return;
-      var panel = doc.getElementById(this._emptySelectionPanelID);
-      if (panel && panel.parentNode) {
-        panel.parentNode.removeChild(panel);
-      }
+      this._removeEmptySelectionNodes(doc);
     } catch (e) {
       Zotero.debug("[ReadingHeatmap] Empty selection panel hide error: " + e);
+    }
+  },
+
+  _removeEmptySelectionNodes(doc) {
+    var mini = doc.getElementById(this._emptySelectionMiniID);
+    if (mini && mini.parentNode) {
+      mini.parentNode.removeChild(mini);
+    }
+
+    var legacyPanel = doc.getElementById(this._emptySelectionPanelID);
+    if (legacyPanel && legacyPanel.parentNode) {
+      try {
+        var content = doc.getElementById("zotero-item-pane-content");
+        if (content && content.selectedPanel === legacyPanel) {
+          var fallback = null;
+          for (var i = 0; i < content.children.length; i++) {
+            if (content.children[i] !== legacyPanel) {
+              fallback = content.children[i];
+              break;
+            }
+          }
+          if (fallback) content.selectedPanel = fallback;
+        }
+      } catch (e) {}
+      legacyPanel.parentNode.removeChild(legacyPanel);
     }
   },
 
@@ -3104,49 +3132,38 @@ Zotero.ReadingHeatmap = {
     if (!doc) return;
     var content = doc.getElementById("zotero-item-pane-content");
     if (!content) return;
+    var parent = content.parentNode;
+    if (!parent) return;
 
     var seq = ++this._emptyPanelRenderSeq;
-    var panel = doc.getElementById(this._emptySelectionPanelID);
+    this._removeEmptySelectionNodes(doc);
+
+    var panel = doc.getElementById(this._emptySelectionMiniID);
     if (!panel) {
       panel = doc.createXULElement ? doc.createXULElement("vbox") : doc.createElement("div");
-      panel.setAttribute("id", this._emptySelectionPanelID);
-      panel.setAttribute("flex", "1");
-      panel.style.cssText = "width:100%; height:100%; overflow:auto; box-sizing:border-box; padding:8px;";
-      content.appendChild(panel);
+      panel.setAttribute("id", this._emptySelectionMiniID);
+      panel.setAttribute("class", "reading-heatmap-empty-mini-bar");
+      panel.setAttribute("pack", "start");
+      panel.style.cssText = "width:100%; box-sizing:border-box; padding:8px 8px 6px; border-bottom:1px solid #d0d7de; flex:0 0 auto;";
+      parent.insertBefore(panel, content);
+    } else if (panel.parentNode !== parent || panel.nextSibling !== content) {
+      parent.insertBefore(panel, content);
     }
 
-    content.selectedPanel = panel;
     while (panel.firstChild) {
       panel.removeChild(panel.firstChild);
     }
 
-    var body = doc.createElement("div");
-    body.style.cssText = "width:100%; box-sizing:border-box;";
-    panel.appendChild(body);
-
-    await this._renderEmptySelectionView(doc, body);
-
-    if (seq !== this._emptyPanelRenderSeq || !this._shouldShowEmptySelectionPanel(win)) {
-      this._hideEmptySelectionPanel(win);
-      return;
-    }
-    content.selectedPanel = panel;
-  },
-
-  async _renderEmptySelectionView(doc, body) {
-    body.style.cssText = "width:100%; min-height:100%; box-sizing:border-box;";
-
     var mini = doc.createElement("div");
     mini.setAttribute("id", "reading-heatmap-empty-mini");
-    mini.style.cssText = "width:100%; box-sizing:border-box; padding:6px 2px 8px; border-bottom:1px solid #d0d7de; margin-bottom:8px;";
-    body.appendChild(mini);
+    mini.style.cssText = "width:100%; box-sizing:border-box;";
+    panel.appendChild(mini);
 
     await this._renderCurrentMiniHeatmap(doc, mini);
 
-    var extra = doc.createElement("div");
-    extra.setAttribute("id", "reading-heatmap-empty-extra-content");
-    extra.style.cssText = "width:100%; min-height:80px; box-sizing:border-box;";
-    body.appendChild(extra);
+    if (seq !== this._emptyPanelRenderSeq || !this._shouldShowEmptySelectionPanel(win)) {
+      this._hideEmptySelectionPanel(win);
+    }
   },
 
   async _renderCurrentMiniHeatmap(doc, body) {
