@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.6.12
+ * Reading Heatmap - Main Plugin Script v0.6.13
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -47,6 +47,10 @@
  * Changes in v0.6.12:
  * - Added a compact sidebar mode that collapses controls into a slim divider,
  *   leaving a clean calendar view.
+ *
+ * Changes in v0.6.13:
+ * - Moved the compact controls toggle into Zotero's native section header,
+ *   next to the built-in section collapse button.
  */
 
 {
@@ -1928,6 +1932,7 @@ Zotero.ReadingHeatmap = {
   _calendarMode: "month",      // "month" or "week"  (NEW in v0.6.0)
   _showSummary: true,          // toggle summary bar  (NEW in v0.6.0)
   _controlsCollapsed: false,   // hide toolbars/buttons for a clean calendar view
+  _controlsToggleButtonType: "reading-heatmap-controls-toggle",
   _weekRefDate: null,          // reference date for week view navigation
   _groupDisplayMode: "combined",  // "combined" (aggregated) or "overlay" (multi-color stripes) (NEW in v0.6.1)
   _showMembers: true,             // toggle individual member heatmaps in group view (NEW in v0.6.1)
@@ -2042,6 +2047,17 @@ Zotero.ReadingHeatmap = {
         icon: "chrome://reading-heatmap/content/icons/icon32.png",
         l10nID: "reading-heatmap-sidenav",
       },
+      sectionButtons: [
+        {
+          type: "reading-heatmap-controls-toggle",
+          icon: "chrome://reading-heatmap/content/icons/controls-expanded.svg",
+          darkIcon: "chrome://reading-heatmap/content/icons/controls-expanded.svg",
+          l10nID: "reading-heatmap-controls-toggle",
+          onClick: function(props) {
+            self._toggleControlsCollapsed(props && props.doc);
+          },
+        },
+      ],
       onInit: function(props) {
         Zotero.debug("[ReadingHeatmap] Section onInit called");
         self._panelBodies.add(props.body);
@@ -2049,6 +2065,7 @@ Zotero.ReadingHeatmap = {
         props.body.style.overflowX = "hidden";
         props.body.style.boxSizing = "border-box";
         props.body.style.width = "100%";
+        self._syncControlsToggleButtons(props.doc || props.body.ownerDocument);
       },
       onDestroy: function(props) {
         self._panelBodies.delete(props.body);
@@ -2093,27 +2110,46 @@ Zotero.ReadingHeatmap = {
     Zotero.debug("[ReadingHeatmap] registerSection returned: " + this._sectionKey);
   },
 
-  _buildControlsCollapseToggle(doc) {
+  _getControlsToggleIcon() {
+    return "chrome://reading-heatmap/content/icons/" +
+      (this._controlsCollapsed ? "controls-collapsed.svg" : "controls-expanded.svg");
+  },
+
+  _getControlsToggleTitle() {
+    return this._controlsCollapsed ? "Show heatmap controls" : "Hide heatmap controls";
+  },
+
+  _syncControlsToggleButtons(doc) {
+    if (!doc || !doc.querySelectorAll) return;
+    var icon = this._getControlsToggleIcon();
+    var title = this._getControlsToggleTitle();
+    var selector = "." + this._controlsToggleButtonType + ".section-custom-button";
+    var buttons = doc.querySelectorAll(selector);
+    for (var i = 0; i < buttons.length; i++) {
+      var button = buttons[i];
+      button.style.setProperty("--custom-button-icon-light", "url('" + icon + "')");
+      button.style.setProperty("--custom-button-icon-dark", "url('" + icon + "')");
+      button.setAttribute("tooltiptext", title);
+      button.setAttribute("title", title);
+      button.setAttribute("aria-label", title);
+    }
+  },
+
+  _syncAllControlsToggleButtons() {
     var self = this;
-    var wrapper = doc.createElement("div");
-    wrapper.style.cssText = "display:flex; align-items:center; gap:6px; width:100%; margin:0 0 6px 0; box-sizing:border-box;";
-
-    var line = doc.createElement("div");
-    line.style.cssText = "height:1px; background:#d0d7de; flex:1; min-width:0;";
-    wrapper.appendChild(line);
-
-    var toggleBtn = doc.createElement("button");
-    toggleBtn.textContent = this._controlsCollapsed ? "v^" : "^v";
-    toggleBtn.setAttribute("aria-label", this._controlsCollapsed ? "Show heatmap controls" : "Hide heatmap controls");
-    toggleBtn.setAttribute("title", this._controlsCollapsed ? "Show controls" : "Hide controls");
-    toggleBtn.style.cssText = "border:none; background:transparent; color:#57606a; cursor:pointer; font-size:12px; line-height:1; padding:0 2px; min-width:20px; font-family:monospace;";
-    toggleBtn.addEventListener("click", function() {
-      self._controlsCollapsed = !self._controlsCollapsed;
-      self._refreshPanel();
+    this._panelBodies.forEach(function(body) {
+      try {
+        self._syncControlsToggleButtons(body.ownerDocument);
+      } catch (e) {}
     });
-    wrapper.appendChild(toggleBtn);
+  },
 
-    return wrapper;
+  _toggleControlsCollapsed(doc) {
+    this._controlsCollapsed = !this._controlsCollapsed;
+    if (doc) {
+      this._syncControlsToggleButtons(doc);
+    }
+    this._refreshPanel();
   },
 
   /**
@@ -2128,7 +2164,7 @@ Zotero.ReadingHeatmap = {
     var months = ["January","February","March","April","May","June",
                   "July","August","September","October","November","December"];
 
-    body.appendChild(this._buildControlsCollapseToggle(doc));
+    this._syncControlsToggleButtons(doc);
 
     if (!this._controlsCollapsed) {
       // === Top toolbar: Calendar mode toggle (Week/Month) + Summary toggle ===

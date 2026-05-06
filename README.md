@@ -126,6 +126,10 @@ The main plugin script (`reading-heatmap.js`) is organized into six sections:
 
 - Added a slim collapse toggle in the sidebar to hide controls and show a clean calendar-only view
 
+### v0.6.13
+
+- Moved the clean calendar toggle into Zotero's native section header, next to the built-in section collapse button
+
 ### v0.6.2
 
 - User color (userColor) now syncs to the server: each member's personalized color is uploaded during device registration and returned in group data downloads
