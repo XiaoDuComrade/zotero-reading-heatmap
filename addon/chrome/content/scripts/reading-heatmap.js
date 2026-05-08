@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.7.3
+ * Reading Heatmap - Main Plugin Script v0.7.4
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -68,6 +68,10 @@
  * Changes in v0.7.3:
  * - Temporarily disable automatic empty-selection mini heatmap mounting while
  *   keeping the mini heatmap renderer available for future sidebar work.
+ *
+ * Changes in v0.7.4:
+ * - Removed the disabled empty-selection listener/rendering pipeline, keeping
+ *   only a small cleanup hook and the reusable mini heatmap renderer.
  */
 
 {
@@ -2252,9 +2256,6 @@ Zotero.ReadingHeatmap = {
   _panelBodies: new Set(),
   _emptySelectionPanelID: "reading-heatmap-empty-selection-panel",
   _emptySelectionMiniID: "reading-heatmap-empty-mini-bar",
-  _emptySelectionEnabled: false,
-  _emptyPanelListeners: new Map(),
-  _emptyPanelRenderSeq: 0,
   _currentYear: null,
   _currentMonth: null,
   _viewMode: "personal",       // "personal" or "group"
@@ -2939,260 +2940,41 @@ Zotero.ReadingHeatmap = {
     this._refreshPanel();
   },
 
-  _getZoteroPaneForWindow(win) {
-    if (!win) return null;
-    if (win.ZoteroPane_Local) return win.ZoteroPane_Local;
-    if (win.ZoteroPane) return win.ZoteroPane;
-    try {
-      if (Zotero.getActiveZoteroPane) return Zotero.getActiveZoteroPane();
-    } catch (e) {}
-    return null;
-  },
-
-  _isLibraryTabActive(win) {
-    try {
-      if (win && win.Zotero_Tabs && win.Zotero_Tabs.selectedType &&
-          win.Zotero_Tabs.selectedType !== "library") {
-        return false;
-      }
-    } catch (e) {}
-    return true;
-  },
-
-  _getSelectedItemCount(win) {
-    var pane = this._getZoteroPaneForWindow(win);
-    if (!pane) return null;
-
-    try {
-      if (pane.getSelectedItems) {
-        var items = pane.getSelectedItems(true) || [];
-        return items.length || 0;
-      }
-    } catch (e) {}
-
-    try {
-      if (pane.itemsView && pane.itemsView.selection &&
-          typeof pane.itemsView.selection.count === "number") {
-        return pane.itemsView.selection.count;
-      }
-    } catch (e2) {}
-
-    return null;
-  },
-
-  _shouldShowEmptySelectionPanel(win) {
-    if (!this._isLibraryTabActive(win)) return false;
-    var count = this._getSelectedItemCount(win);
-    return count === 0;
-  },
-
-  _bindEmptySelectionPanel(win) {
-    if (!win || this._emptyPanelListeners.has(win)) return;
-
-    if (!this._emptySelectionEnabled) {
-      this._hideEmptySelectionPanel(win);
-      return;
-    }
-
-    var self = this;
-    var state = {
-      itemsView: null,
-      collectionsView: null,
-      retryTimer: null,
-      updateTimer: null,
-      attempts: 0,
-    };
-
-    state.handler = function() {
-      self._queueEmptySelectionPanelUpdate(win);
-    };
-
-    state.attach = function() {
-      var pane = self._getZoteroPaneForWindow(win);
-      if (!pane) return false;
-      var attached = false;
-
-      try {
-        if (!state.itemsView && pane.itemsView && pane.itemsView.onSelect &&
-            pane.itemsView.onSelect.addListener) {
-          pane.itemsView.onSelect.addListener(state.handler);
-          state.itemsView = pane.itemsView;
-          attached = true;
-        }
-      } catch (e) {
-        Zotero.debug("[ReadingHeatmap] Empty panel itemsView listener error: " + e);
-      }
-
-      try {
-        if (!state.collectionsView && pane.collectionsView && pane.collectionsView.onSelect &&
-            pane.collectionsView.onSelect.addListener) {
-          pane.collectionsView.onSelect.addListener(state.handler);
-          state.collectionsView = pane.collectionsView;
-          attached = true;
-        }
-      } catch (e2) {
-        Zotero.debug("[ReadingHeatmap] Empty panel collectionsView listener error: " + e2);
-      }
-
-      return attached || !!state.itemsView || !!state.collectionsView;
-    };
-
-    this._emptyPanelListeners.set(win, state);
-
-    if (!state.attach()) {
-      state.retryTimer = _rhSetInterval(function() {
-        state.attempts++;
-        if (state.attach() || state.attempts > 20) {
-          _rhClearInterval(state.retryTimer);
-          state.retryTimer = null;
-        }
-        self._queueEmptySelectionPanelUpdate(win);
-      }, 500);
-    }
-
-    this._queueEmptySelectionPanelUpdate(win);
-  },
-
-  _unbindEmptySelectionPanel(win) {
-    var state = this._emptyPanelListeners.get(win);
-    if (!state) return;
-
-    try {
-      if (state.itemsView && state.itemsView.onSelect && state.itemsView.onSelect.removeListener) {
-        state.itemsView.onSelect.removeListener(state.handler);
-      }
-    } catch (e) {}
-
-    try {
-      if (state.collectionsView && state.collectionsView.onSelect && state.collectionsView.onSelect.removeListener) {
-        state.collectionsView.onSelect.removeListener(state.handler);
-      }
-    } catch (e2) {}
-
-    if (state.retryTimer) _rhClearInterval(state.retryTimer);
-    if (state.updateTimer) _rhClearTimeout(state.updateTimer);
-    this._hideEmptySelectionPanel(win);
-    this._emptyPanelListeners.delete(win);
-  },
-
-  _queueEmptySelectionPanelUpdate(win) {
-    var state = this._emptyPanelListeners.get(win);
-    if (!state) return;
-    var self = this;
-    if (state.updateTimer) _rhClearTimeout(state.updateTimer);
-    state.updateTimer = _rhSetTimeout(function() {
-      state.updateTimer = null;
-      self._updateEmptySelectionPanel(win);
-    }, 0);
-  },
-
-  _refreshEmptySelectionPanels() {
-    if (!this._emptySelectionEnabled) return;
-    var self = this;
-    this._emptyPanelListeners.forEach(function(state, win) {
-      self._queueEmptySelectionPanelUpdate(win);
-    });
-  },
-
-  async _updateEmptySelectionPanel(win) {
-    try {
-      if (!this._emptySelectionEnabled) {
-        this._hideEmptySelectionPanel(win);
-        return;
-      }
-      if (!this._shouldShowEmptySelectionPanel(win)) {
-        this._hideEmptySelectionPanel(win);
-        return;
-      }
-      await this._showEmptySelectionPanel(win);
-    } catch (e) {
-      Zotero.debug("[ReadingHeatmap] Empty selection panel update error: " + e);
-    }
-  },
-
-  _hideEmptySelectionPanel(win) {
-    this._emptyPanelRenderSeq++;
+  _cleanupEmptySelectionNodes(win) {
     try {
       var doc = win && win.document;
       if (!doc) return;
-      this._removeEmptySelectionNodes(doc);
-    } catch (e) {
-      Zotero.debug("[ReadingHeatmap] Empty selection panel hide error: " + e);
-    }
-  },
 
-  _removeEmptySelectionNodes(doc) {
-    var mini = doc.getElementById(this._emptySelectionMiniID);
-    if (mini && mini.parentNode) {
-      var parent = mini.parentNode;
-      var touchedPosition = mini.getAttribute("data-reading-heatmap-position-set") === "true";
-      var previousPosition = mini.getAttribute("data-reading-heatmap-parent-position") || "";
-      mini.parentNode.removeChild(mini);
-      if (touchedPosition && parent && parent.style) {
-        parent.style.position = previousPosition;
-      }
-    }
-
-    var legacyPanel = doc.getElementById(this._emptySelectionPanelID);
-    if (legacyPanel && legacyPanel.parentNode) {
-      try {
-        var content = doc.getElementById("zotero-item-pane-content");
-        if (content && content.selectedPanel === legacyPanel) {
-          var fallback = null;
-          for (var i = 0; i < content.children.length; i++) {
-            if (content.children[i] !== legacyPanel) {
-              fallback = content.children[i];
-              break;
-            }
-          }
-          if (fallback) content.selectedPanel = fallback;
+      var mini = doc.getElementById(this._emptySelectionMiniID);
+      if (mini && mini.parentNode) {
+        var parent = mini.parentNode;
+        var touchedPosition = mini.getAttribute("data-reading-heatmap-position-set") === "true";
+        var previousPosition = mini.getAttribute("data-reading-heatmap-parent-position") || "";
+        mini.parentNode.removeChild(mini);
+        if (touchedPosition && parent && parent.style) {
+          parent.style.position = previousPosition;
         }
-      } catch (e) {}
-      legacyPanel.parentNode.removeChild(legacyPanel);
-    }
-  },
-
-  async _showEmptySelectionPanel(win) {
-    var doc = win && win.document;
-    if (!doc) return;
-    var content = doc.getElementById("zotero-item-pane-content");
-    if (!content) return;
-    var parent = content.parentNode;
-    if (!parent) return;
-
-    var seq = ++this._emptyPanelRenderSeq;
-    this._removeEmptySelectionNodes(doc);
-
-    var panel = doc.getElementById(this._emptySelectionMiniID);
-    if (!panel) {
-      panel = doc.createXULElement ? doc.createXULElement("vbox") : doc.createElement("div");
-      panel.setAttribute("id", this._emptySelectionMiniID);
-      panel.setAttribute("class", "reading-heatmap-empty-mini-bar");
-      panel.setAttribute("pack", "start");
-      if (!parent.style.position || parent.style.position === "static") {
-        panel.setAttribute("data-reading-heatmap-position-set", "true");
-        panel.setAttribute("data-reading-heatmap-parent-position", parent.style.position || "");
-        parent.style.position = "relative";
       }
-      panel.style.cssText = "position:absolute; top:0; left:0; right:0; z-index:20; width:100%; box-sizing:border-box; padding:4px 8px 3px; border-bottom:1px solid rgba(208,215,222,0.9); background:rgba(246,248,250,0.94); pointer-events:none; max-height:76px; overflow:hidden;";
-      parent.insertBefore(panel, content);
-    } else if (panel.parentNode !== parent || panel.nextSibling !== content) {
-      parent.insertBefore(panel, content);
-    }
 
-    while (panel.firstChild) {
-      panel.removeChild(panel.firstChild);
-    }
-
-    var mini = doc.createElement("div");
-    mini.setAttribute("id", "reading-heatmap-empty-mini");
-    mini.style.cssText = "width:100%; box-sizing:border-box;";
-    panel.appendChild(mini);
-
-    await this._renderCurrentMiniHeatmap(doc, mini);
-
-    if (seq !== this._emptyPanelRenderSeq || !this._shouldShowEmptySelectionPanel(win)) {
-      this._hideEmptySelectionPanel(win);
+      var legacyPanel = doc.getElementById(this._emptySelectionPanelID);
+      if (legacyPanel && legacyPanel.parentNode) {
+        try {
+          var content = doc.getElementById("zotero-item-pane-content");
+          if (content && content.selectedPanel === legacyPanel) {
+            var fallback = null;
+            for (var i = 0; i < content.children.length; i++) {
+              if (content.children[i] !== legacyPanel) {
+                fallback = content.children[i];
+                break;
+              }
+            }
+            if (fallback) content.selectedPanel = fallback;
+          }
+        } catch (e) {}
+        legacyPanel.parentNode.removeChild(legacyPanel);
+      }
+    } catch (e2) {
+      Zotero.debug("[ReadingHeatmap] Empty selection cleanup error: " + e2);
     }
   },
 
@@ -3257,7 +3039,6 @@ Zotero.ReadingHeatmap = {
         Zotero.debug("[ReadingHeatmap] Refresh error: " + e);
       }
     });
-    this._refreshEmptySelectionPanels();
   },
 
   _showImportDialog() {
@@ -3423,12 +3204,12 @@ Zotero.ReadingHeatmap = {
 
   onMainWindowLoad(win) {
     if (this.tracker) this.tracker.onMainWindowLoad(win);
-    this._bindEmptySelectionPanel(win);
+    this._cleanupEmptySelectionNodes(win);
   },
 
   onMainWindowUnload(win) {
     if (this.tracker) this.tracker.onMainWindowUnload(win);
-    this._unbindEmptySelectionPanel(win);
+    this._cleanupEmptySelectionNodes(win);
   },
 
   shutdown() {
@@ -3436,10 +3217,7 @@ Zotero.ReadingHeatmap = {
     if (this.sync) this.sync.shutdown();
     if (this.storage) this.storage.forceSave();
 
-    var wins = Array.from(this._emptyPanelListeners.keys());
-    for (var i = 0; i < wins.length; i++) {
-      this._unbindEmptySelectionPanel(wins[i]);
-    }
+    this._cleanupEmptySelectionNodes(Zotero.getMainWindow && Zotero.getMainWindow());
 
     this._unregisterSectionIfPresent();
 

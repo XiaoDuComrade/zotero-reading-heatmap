@@ -152,6 +152,11 @@ The main plugin script (`reading-heatmap.js`) is organized into six sections:
 - Temporarily disabled automatic empty-selection mini heatmap mounting to avoid interfering with Zotero's default side pane and Chartero
 - Kept the mini heatmap rendering code in place for future sidebar work
 
+### v0.7.4
+
+- Simplified the core script by removing the disabled empty-selection listener and overlay pipeline
+- Kept a small cleanup hook for old empty-selection DOM nodes and retained the reusable mini heatmap renderer
+
 ### v0.6.2
 
 - User color (userColor) now syncs to the server: each member's personalized color is uploaded during device registration and returned in group data downloads
