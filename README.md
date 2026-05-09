@@ -157,6 +157,12 @@ The main plugin script (`reading-heatmap.js`) is organized into six sections:
 - Simplified the core script by removing the disabled empty-selection listener and overlay pipeline
 - Kept a small cleanup hook for old empty-selection DOM nodes and retained the reusable mini heatmap renderer
 
+### v0.7.5
+
+- Restored the empty-selection mini heatmap as a Zotero item-pane deck panel
+- Added a Zotero-like empty view message below the mini heatmap showing the current view item count when available
+- Added Chartero priority handling: if Chartero's summary iframe is active, Reading Heatmap hides its empty-selection panel instead of covering Chartero
+
 ### v0.6.2
 
 - User color (userColor) now syncs to the server: each member's personalized color is uploaded during device registration and returned in group data downloads
