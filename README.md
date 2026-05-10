@@ -12,6 +12,8 @@ A Zotero plugin that automatically tracks your reading activity and visualizes i
 
 **Summary Statistics Toggle** allows you to show or hide the summary bar displaying Total reading time, Active days, current Streak, and Best streak.
 
+**Persistent Panel State** restores the last sidebar state when Zotero opens again, including personal/group view, selected group, week/month mode, overlay mode, navigation date, and collapsed controls.
+
 **Group Reading Sync** enables collaborative reading tracking. Deploy a backend server, create or join groups with 6-digit invite codes, and view aggregated and individual heatmaps for all group members. Data syncs automatically every 5 minutes.
 
 **Responsive Legend** ensures the color legend wraps properly within the sidebar width, fixing overflow issues in group view with multiple member heatmaps.

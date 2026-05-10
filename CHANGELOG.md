@@ -2,6 +2,11 @@
 
 All notable changes to Zotero Reading Heatmap are documented here.
 
+## v0.7.6
+
+- Persisted the last sidebar state across Zotero restarts.
+- Restored personal/group view, selected group, week/month mode, date navigation, group overlay/combined mode, member expansion, summary visibility, and clean-calendar collapsed controls.
+
 ## v0.7.5
 
 - Restored the empty-selection mini heatmap as a Zotero item-pane deck panel.

@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.7.5
+ * Reading Heatmap - Main Plugin Script v0.7.6
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -76,6 +76,10 @@
  * Changes in v0.7.5:
  * - Restore the empty-selection mini heatmap as a deck panel with a Zotero-like
  *   empty view message, while yielding to Chartero's summary iframe when active.
+ *
+ * Changes in v0.7.6:
+ * - Persist the last panel state across Zotero restarts, including personal/group
+ *   view, selected group, overlay mode, calendar mode, date, and collapsed controls.
  */
 
 {
@@ -2273,6 +2277,8 @@ Zotero.ReadingHeatmap = {
   _weekRefDate: null,          // reference date for week view navigation
   _groupDisplayMode: "combined",  // "combined" (aggregated) or "overlay" (multi-color stripes) (NEW in v0.6.1)
   _showMembers: true,             // toggle individual member heatmaps in group view (NEW in v0.6.1)
+  _uiPrefBranch: "extensions.reading-heatmap.ui.",
+  _uiStateLoaded: false,
 
   async init(id, version, rootURI) {
     this.id = id;
@@ -2327,6 +2333,15 @@ Zotero.ReadingHeatmap = {
       Zotero.debug("[ReadingHeatmap] Importer init error: " + e);
     }
 
+    // Restore sidebar state after storage is available so saved group IDs can be validated.
+    try {
+      this._loadUIState();
+      Zotero.debug("[ReadingHeatmap] UI state restored");
+    } catch (e) {
+      this._uiStateLoaded = true;
+      Zotero.debug("[ReadingHeatmap] UI state restore error: " + e);
+    }
+
     // Register the item pane section
     try {
       this._registerSection();
@@ -2350,6 +2365,133 @@ Zotero.ReadingHeatmap = {
     }
 
     Zotero.debug("[ReadingHeatmap] Fully initialized v" + version);
+  },
+
+  _getUIPref(name, fallback) {
+    try {
+      var value = Zotero.Prefs.get(this._uiPrefBranch + name, true);
+      if (value === null || typeof value === "undefined") return fallback;
+      return value;
+    } catch (e) {
+      return fallback;
+    }
+  },
+
+  _setUIPref(name, value) {
+    try {
+      Zotero.Prefs.set(this._uiPrefBranch + name, value, true);
+    } catch (e) {
+      Zotero.debug("[ReadingHeatmap] UI state save skipped (" + name + "): " + e);
+    }
+  },
+
+  _getBoolUIPref(name, fallback) {
+    var value = this._getUIPref(name, fallback);
+    if (typeof value === "boolean") return value;
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return fallback;
+  },
+
+  _getIntUIPref(name, fallback) {
+    var value = this._getUIPref(name, fallback);
+    var parsed = parseInt(value, 10);
+    return isNaN(parsed) ? fallback : parsed;
+  },
+
+  _dateToISO(date) {
+    if (!(date instanceof Date) || isNaN(date.getTime())) return "";
+    var month = String(date.getMonth() + 1).padStart(2, "0");
+    var day = String(date.getDate()).padStart(2, "0");
+    return date.getFullYear() + "-" + month + "-" + day;
+  },
+
+  _parseISODate(value) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    var parts = value.split("-");
+    var year = parseInt(parts[0], 10);
+    var month = parseInt(parts[1], 10);
+    var day = parseInt(parts[2], 10);
+    var date = new Date(year, month - 1, day);
+    if (date.getFullYear() !== year || date.getMonth() + 1 !== month || date.getDate() !== day) {
+      return null;
+    }
+    return date;
+  },
+
+  _loadUIState() {
+    var now = new Date();
+    var fallbackYear = this._currentYear || now.getFullYear();
+    var fallbackMonth = this._currentMonth || now.getMonth() + 1;
+
+    var year = this._getIntUIPref("currentYear", fallbackYear);
+    var month = this._getIntUIPref("currentMonth", fallbackMonth);
+    var invalidMonth = month < 1 || month > 12;
+    var futureMonth = year > now.getFullYear() ||
+      (year === now.getFullYear() && month > now.getMonth() + 1);
+    if (!year || invalidMonth || futureMonth) {
+      year = now.getFullYear();
+      month = now.getMonth() + 1;
+    }
+    this._currentYear = year;
+    this._currentMonth = month;
+
+    var weekRefDate = this._parseISODate(this._getUIPref("weekRefDate", ""));
+    if (!weekRefDate) {
+      weekRefDate = new Date(now);
+    }
+    if (weekRefDate > now) {
+      weekRefDate = new Date(now);
+    }
+    this._weekRefDate = weekRefDate;
+
+    var calendarMode = this._getUIPref("calendarMode", this._calendarMode);
+    this._calendarMode = calendarMode === "week" ? "week" : "month";
+    if (this._calendarMode === "week") {
+      this._currentYear = this._weekRefDate.getFullYear();
+      this._currentMonth = this._weekRefDate.getMonth() + 1;
+    }
+
+    this._showSummary = this._getBoolUIPref("showSummary", this._showSummary);
+    this._controlsCollapsed = this._getBoolUIPref("controlsCollapsed", this._controlsCollapsed);
+
+    var groupDisplayMode = this._getUIPref("groupDisplayMode", this._groupDisplayMode);
+    this._groupDisplayMode = groupDisplayMode === "overlay" ? "overlay" : "combined";
+    this._showMembers = this._getBoolUIPref("showMembers", this._showMembers);
+
+    var viewMode = this._getUIPref("viewMode", this._viewMode);
+    var selectedGroupId = this._getUIPref("selectedGroupId", "");
+    var groups = {};
+    try {
+      groups = (this.storage && this.storage.getGroups) ? this.storage.getGroups() : {};
+    } catch (e) {}
+    if (viewMode === "group" && selectedGroupId && groups[selectedGroupId]) {
+      this._viewMode = "group";
+      this._selectedGroupId = selectedGroupId;
+    } else {
+      this._viewMode = "personal";
+      this._selectedGroupId = null;
+    }
+
+    this._uiStateLoaded = true;
+  },
+
+  _saveUIState() {
+    if (!this._uiStateLoaded) return;
+    var now = new Date();
+    var year = this._currentYear || now.getFullYear();
+    var month = this._currentMonth || now.getMonth() + 1;
+
+    this._setUIPref("viewMode", this._viewMode === "group" ? "group" : "personal");
+    this._setUIPref("selectedGroupId", this._selectedGroupId || "");
+    this._setUIPref("calendarMode", this._calendarMode === "week" ? "week" : "month");
+    this._setUIPref("showSummary", !!this._showSummary);
+    this._setUIPref("controlsCollapsed", !!this._controlsCollapsed);
+    this._setUIPref("weekRefDate", this._dateToISO(this._weekRefDate || now));
+    this._setUIPref("currentYear", year);
+    this._setUIPref("currentMonth", month);
+    this._setUIPref("groupDisplayMode", this._groupDisplayMode === "overlay" ? "overlay" : "combined");
+    this._setUIPref("showMembers", !!this._showMembers);
   },
 
   _unregisterSectionIfPresent() {
@@ -3308,6 +3450,7 @@ Zotero.ReadingHeatmap = {
 
   _refreshPanel() {
     var self = this;
+    this._saveUIState();
     this._panelBodies.forEach(function(body) {
       try {
         var doc = body.ownerDocument;
