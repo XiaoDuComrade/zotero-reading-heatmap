@@ -2,6 +2,7 @@ pref("extensions.reading-heatmap.server.url", "");
 pref("extensions.reading-heatmap.user.name", "");
 pref("extensions.reading-heatmap.sync.enabled", true);
 pref("extensions.reading-heatmap.user.color", "#40c463");
+pref("extensions.reading-heatmap.tracking.idleTimeoutSeconds", 300);
 pref("extensions.reading-heatmap.ui.viewMode", "personal");
 pref("extensions.reading-heatmap.ui.selectedGroupId", "");
 pref("extensions.reading-heatmap.ui.calendarMode", "month");

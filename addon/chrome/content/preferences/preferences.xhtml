@@ -23,6 +23,18 @@
                     style="width: 100px; font-family: monospace;"/>
       </hbox>
     </vbox>
+
+    <vbox style="margin: 8px 0;">
+      <label value="Idle timeout (seconds):"/>
+      <html:input id="pref-idle-timeout" type="number"
+                  min="60"
+                  step="30"
+                  preference="extensions.reading-heatmap.tracking.idleTimeoutSeconds"
+                  style="width: 100px; margin-top: 4px;"/>
+      <description style="font-size: 11px; color: #666; margin-top: 4px;">
+        Stop counting after this many seconds without mouse, keyboard, scroll, or touch activity.
+      </description>
+    </vbox>
   </groupbox>
 
   <groupbox>

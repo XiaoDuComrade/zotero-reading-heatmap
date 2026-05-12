@@ -2,6 +2,13 @@
 
 All notable changes to Zotero Reading Heatmap are documented here.
 
+## v0.7.7
+
+- Added hover enlargement for heatmap cells with reading-duration tooltips.
+- Added per-member hover tooltips in group overlay mode, so each colored member stripe reports that member's duration.
+- Added idle-aware timing: active-window tracking now stops after 5 minutes without mouse, keyboard, scroll, or touch activity by default.
+- Added an idle timeout setting in the Reading Heatmap preferences pane.
+
 ## v0.7.6
 
 - Persisted the last sidebar state across Zotero restarts.

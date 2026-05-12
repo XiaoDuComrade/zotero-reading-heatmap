@@ -6,9 +6,13 @@ A Zotero plugin that automatically tracks your reading activity and visualizes i
 
 **Automatic Zotero Activity Tracking** records time while the Zotero main window is active/focused. This avoids relying on PDF scroll events, so time is counted even when you are reading without scrolling. Data is saved locally every few seconds.
 
+**Idle-Aware Timing** stops counting after 5 minutes without mouse, keyboard, scroll, or touch activity by default. The idle timeout can be adjusted in the Reading Heatmap settings pane.
+
 **Monthly Calendar Heatmap** displays a full month of reading activity in a calendar grid with 5-level color grading. Navigate between months with pagination controls. Today's cell is highlighted with a blue border.
 
 **Weekly View** shows a compact single-row view of the current week's reading activity. Toggle between Week and Month views using the toolbar buttons at the top of the panel.
+
+**Hover Details** lightly enlarges heatmap cells on hover and shows the corresponding reading duration. In group overlay mode, each member stripe shows that member's own duration.
 
 **Summary Statistics Toggle** allows you to show or hide the summary bar displaying Total reading time, Active days, current Streak, and Best streak.
 

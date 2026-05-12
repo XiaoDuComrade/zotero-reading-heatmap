@@ -1,6 +1,6 @@
 
 /**
- * Reading Heatmap - Main Plugin Script v0.7.6
+ * Reading Heatmap - Main Plugin Script v0.7.7
  * All modules bundled into one file for simplicity.
  * 
  * IMPORTANT: All UI rendering uses DOM API (createElement / createElementNS)
@@ -80,6 +80,10 @@
  * Changes in v0.7.6:
  * - Persist the last panel state across Zotero restarts, including personal/group
  *   view, selected group, overlay mode, calendar mode, date, and collapsed controls.
+ *
+ * Changes in v0.7.7:
+ * - Add hover enlargement and per-member tooltips for heatmap cells.
+ * - Stop active-window tracking after a configurable idle timeout with no input.
  */
 
 {
@@ -522,17 +526,23 @@ class ReadingTracker {
     this.pollInterval = null;
     this.isTracking = false;
     this.lastTick = null;
+    this.lastActivity = 0;
+    this._lastActivitySignal = 0;
     this.windowListeners = new Map();
     this.ACTIVITY_ITEM_KEY = "__zotero_window_active__";
     this.ACTIVITY_TITLE = "Zotero Active Time";
     this.POLL_INTERVAL_MS = 10000;
     this.MAX_TICK_SECONDS = 60;
+    this.DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
+    this.ACTIVITY_EVENT_THROTTLE_MS = 500;
+    this.ACTIVITY_EVENTS = ["mousemove", "mousedown", "mouseup", "keydown", "wheel", "scroll", "pointerdown", "touchstart"];
   }
 
   init() {
+    this._markUserActivity();
     this.onMainWindowLoad(Zotero.getMainWindow());
     this._syncFocusState();
-    Zotero.debug("[ReadingHeatmap:Tracker] Initialized window activity tracking");
+    Zotero.debug("[ReadingHeatmap:Tracker] Initialized window activity tracking with idle detection");
   }
 
   shutdown() {
@@ -541,8 +551,18 @@ class ReadingTracker {
       try {
         win.removeEventListener("focus", listeners.focus, true);
         win.removeEventListener("blur", listeners.blur, true);
+        if (listeners.activityEvents) {
+          for (var i = 0; i < listeners.activityEvents.length; i++) {
+            win.removeEventListener(listeners.activityEvents[i], listeners.activity, true);
+          }
+        }
         if (win.document) {
           win.document.removeEventListener("visibilitychange", listeners.visibility, true);
+          if (listeners.activityEvents) {
+            for (var j = 0; j < listeners.activityEvents.length; j++) {
+              win.document.removeEventListener(listeners.activityEvents[j], listeners.activity, true);
+            }
+          }
         }
       } catch (e) {}
     });
@@ -553,14 +573,22 @@ class ReadingTracker {
     if (!win || this.windowListeners.has(win)) return;
     var self = this;
     var listeners = {
-      focus: function() { self._syncFocusState(); },
+      focus: function() { self._markUserActivity(); self._syncFocusState(); },
       blur: function() { _rhSetTimeout(function() { self._syncFocusState(); }, 100); },
       visibility: function() { self._syncFocusState(); },
+      activity: function() { self._markUserActivity(); },
+      activityEvents: this.ACTIVITY_EVENTS.slice(),
     };
     win.addEventListener("focus", listeners.focus, true);
     win.addEventListener("blur", listeners.blur, true);
+    for (var i = 0; i < listeners.activityEvents.length; i++) {
+      win.addEventListener(listeners.activityEvents[i], listeners.activity, true);
+    }
     if (win.document) {
       win.document.addEventListener("visibilitychange", listeners.visibility, true);
+      for (var j = 0; j < listeners.activityEvents.length; j++) {
+        win.document.addEventListener(listeners.activityEvents[j], listeners.activity, true);
+      }
     }
     this.windowListeners.set(win, listeners);
   }
@@ -571,15 +599,53 @@ class ReadingTracker {
     try {
       win.removeEventListener("focus", listeners.focus, true);
       win.removeEventListener("blur", listeners.blur, true);
+      if (listeners.activityEvents) {
+        for (var i = 0; i < listeners.activityEvents.length; i++) {
+          win.removeEventListener(listeners.activityEvents[i], listeners.activity, true);
+        }
+      }
       if (win.document) {
         win.document.removeEventListener("visibilitychange", listeners.visibility, true);
+        if (listeners.activityEvents) {
+          for (var j = 0; j < listeners.activityEvents.length; j++) {
+            win.document.removeEventListener(listeners.activityEvents[j], listeners.activity, true);
+          }
+        }
       }
     } catch (e) {}
     this.windowListeners.delete(win);
     this._syncFocusState();
   }
 
-  _isAnyTrackedWindowActive() {
+  _getIdleTimeoutMS() {
+    var seconds = this.DEFAULT_IDLE_TIMEOUT_SECONDS;
+    try {
+      var prefSeconds = parseInt(Zotero.Prefs.get("extensions.reading-heatmap.tracking.idleTimeoutSeconds", true), 10);
+      if (!isNaN(prefSeconds) && prefSeconds >= 60) {
+        seconds = Math.min(prefSeconds, 24 * 60 * 60);
+      }
+    } catch (e) {}
+    return seconds * 1000;
+  }
+
+  _markUserActivity() {
+    var now = Date.now();
+    this.lastActivity = now;
+    if (this._lastActivitySignal && now - this._lastActivitySignal < this.ACTIVITY_EVENT_THROTTLE_MS) {
+      return;
+    }
+    this._lastActivitySignal = now;
+    if (!this.isTracking && this._isAnyTrackedWindowFocused()) {
+      this._startTracking();
+    }
+  }
+
+  _isWithinIdleTimeout() {
+    if (!this.lastActivity) return true;
+    return Date.now() - this.lastActivity <= this._getIdleTimeoutMS();
+  }
+
+  _isAnyTrackedWindowFocused() {
     var activeWindow = null;
     try {
       activeWindow = Services.focus.activeWindow;
@@ -593,6 +659,10 @@ class ReadingTracker {
       active = visible && (activeWindow === win || (doc && doc.hasFocus && doc.hasFocus()));
     });
     return active;
+  }
+
+  _isAnyTrackedWindowActive() {
+    return this._isAnyTrackedWindowFocused() && this._isWithinIdleTimeout();
   }
 
   _syncFocusState() {
@@ -636,8 +706,15 @@ class ReadingTracker {
   _recordElapsed() {
     if (!this.isTracking || !this.lastTick) return;
     var now = Date.now();
-    var elapsedSeconds = Math.floor((now - this.lastTick) / 1000);
-    if (elapsedSeconds <= 0) return;
+    var cutoff = now;
+    if (this.lastActivity && now - this.lastActivity > this._getIdleTimeoutMS()) {
+      cutoff = this.lastActivity + this._getIdleTimeoutMS();
+    }
+    var elapsedSeconds = Math.floor((cutoff - this.lastTick) / 1000);
+    if (elapsedSeconds <= 0) {
+      this.lastTick = now;
+      return;
+    }
     elapsedSeconds = Math.min(elapsedSeconds, this.MAX_TICK_SECONDS);
     this.lastTick = now;
 
@@ -1028,6 +1105,31 @@ class HeatmapRenderer {
     return 4;
   }
 
+  _appendSVGTitle(doc, element, text) {
+    if (!text) return;
+    var titleEl = doc.createElementNS("http://www.w3.org/2000/svg", "title");
+    titleEl.textContent = text;
+    element.appendChild(titleEl);
+  }
+
+  _makeHeatmapCellHoverable(doc, element, tooltipText, scale) {
+    if (!element) return;
+    this._appendSVGTitle(doc, element, tooltipText);
+    element.style.cursor = "pointer";
+    element.style.setProperty("transform-box", "fill-box");
+    element.style.setProperty("transform-origin", "center");
+    element.style.setProperty("transition", "transform 140ms ease, filter 140ms ease");
+    var hoverScale = scale || 1.08;
+    element.addEventListener("mouseenter", function() {
+      element.style.setProperty("transform", "scale(" + hoverScale + ")");
+      element.style.setProperty("filter", "drop-shadow(0 1px 2px rgba(27,31,36,0.28))");
+    });
+    element.addEventListener("mouseleave", function() {
+      element.style.removeProperty("transform");
+      element.style.removeProperty("filter");
+    });
+  }
+
   /**
    * Build a summary bar as a DOM fragment.
    * Returns the fragment so caller can append or skip it.
@@ -1191,11 +1293,8 @@ class HeatmapRenderer {
       }
 
       if (!isFuture) {
-        rect.style.cursor = "pointer";
         var tooltipText = dateStr + " | " + this.formatDuration(dayData.totalSeconds);
-        var titleEl = doc.createElementNS(svgNS, "title");
-        titleEl.textContent = tooltipText;
-        rect.appendChild(titleEl);
+        this._makeHeatmapCellHoverable(doc, rect, tooltipText);
       }
 
       svg.appendChild(rect);
@@ -1207,6 +1306,7 @@ class HeatmapRenderer {
       dayText.setAttribute("font-size", "12");
       dayText.setAttribute("fill", (level >= 3 && !isFuture) ? "#ffffff" : "#57606a");
       dayText.setAttribute("text-anchor", "middle");
+      dayText.style.pointerEvents = "none";
       dayText.textContent = String(day);
       svg.appendChild(dayText);
     }
@@ -1320,11 +1420,8 @@ class HeatmapRenderer {
       }
 
       if (!isFuture) {
-        rect.style.cursor = "pointer";
         var tooltipText = dateStr + " | " + this.formatDuration(dayData.totalSeconds);
-        var titleEl = doc.createElementNS(svgNS, "title");
-        titleEl.textContent = tooltipText;
-        rect.appendChild(titleEl);
+        this._makeHeatmapCellHoverable(doc, rect, tooltipText);
       }
 
       svg.appendChild(rect);
@@ -1336,6 +1433,7 @@ class HeatmapRenderer {
       dayText.setAttribute("font-size", "12");
       dayText.setAttribute("fill", (level >= 3 && !isFuture) ? "#ffffff" : "#57606a");
       dayText.setAttribute("text-anchor", "middle");
+      dayText.style.pointerEvents = "none";
       dayText.textContent = String(cellDate.getDate());
       svg.appendChild(dayText);
     }
@@ -1414,9 +1512,7 @@ class HeatmapRenderer {
         rect.setAttribute("stroke-width", "1.2");
       }
       if (!isFuture) {
-        var titleEl = doc.createElementNS(svgNS, "title");
-        titleEl.textContent = dateStr + " | " + this.formatDuration(dayData.totalSeconds);
-        rect.appendChild(titleEl);
+        this._makeHeatmapCellHoverable(doc, rect, dateStr + " | " + this.formatDuration(dayData.totalSeconds), 1.16);
       }
       svg.appendChild(rect);
     }
@@ -1470,9 +1566,7 @@ class HeatmapRenderer {
         rect.setAttribute("stroke-width", "1.2");
       }
       if (!isFuture) {
-        var titleEl = doc.createElementNS(svgNS, "title");
-        titleEl.textContent = dateStr + " | " + this.formatDuration(dayData.totalSeconds);
-        rect.appendChild(titleEl);
+        this._makeHeatmapCellHoverable(doc, rect, dateStr + " | " + this.formatDuration(dayData.totalSeconds), 1.16);
       }
       svg.appendChild(rect);
     }
@@ -1543,6 +1637,9 @@ class HeatmapRenderer {
       bgRect.setAttribute("rx", "2");
       bgRect.setAttribute("ry", "2");
       bgRect.setAttribute("fill", isFuture ? "#f6f8fa" : "#ebedf0");
+      if (!isFuture) {
+        this._makeHeatmapCellHoverable(doc, bgRect, dateStr + " | 0min", 1.16);
+      }
       svg.appendChild(bgRect);
 
       if (!isFuture) {
@@ -1558,7 +1655,7 @@ class HeatmapRenderer {
             tooltipParts.push(mInfo.userName + ": " + self.formatDuration(mDayData.totalSeconds));
           }
         }
-        this._appendOverlayStripes(doc, svg, x, y, cellSize, cellSize, activeMembers, memberColors);
+        this._appendOverlayStripes(doc, svg, x, y, cellSize, cellSize, activeMembers, memberColors, memberList, dateStr);
 
         var tooltipRect = doc.createElementNS(svgNS, "rect");
         tooltipRect.setAttribute("x", String(x));
@@ -1566,6 +1663,7 @@ class HeatmapRenderer {
         tooltipRect.setAttribute("width", String(cellSize));
         tooltipRect.setAttribute("height", String(cellSize));
         tooltipRect.setAttribute("fill", "transparent");
+        tooltipRect.style.pointerEvents = "none";
         var titleEl = doc.createElementNS(svgNS, "title");
         titleEl.textContent = tooltipParts.join("\n");
         tooltipRect.appendChild(titleEl);
@@ -1583,6 +1681,7 @@ class HeatmapRenderer {
         todayRect.setAttribute("fill", "none");
         todayRect.setAttribute("stroke", "#1f6feb");
         todayRect.setAttribute("stroke-width", "1.2");
+        todayRect.style.pointerEvents = "none";
         svg.appendChild(todayRect);
       }
     }
@@ -1625,6 +1724,9 @@ class HeatmapRenderer {
       bgRect.setAttribute("rx", "2");
       bgRect.setAttribute("ry", "2");
       bgRect.setAttribute("fill", isFuture ? "#f6f8fa" : "#ebedf0");
+      if (!isFuture) {
+        this._makeHeatmapCellHoverable(doc, bgRect, dateStr + " | 0min", 1.16);
+      }
       svg.appendChild(bgRect);
 
       if (!isFuture) {
@@ -1640,7 +1742,7 @@ class HeatmapRenderer {
             tooltipParts.push(mInfo.userName + ": " + self.formatDuration(mDayData.totalSeconds));
           }
         }
-        this._appendOverlayStripes(doc, svg, x, 0, cellSize, cellSize, activeMembers, memberColors);
+        this._appendOverlayStripes(doc, svg, x, 0, cellSize, cellSize, activeMembers, memberColors, memberList, dateStr);
 
         var tooltipRect = doc.createElementNS(svgNS, "rect");
         tooltipRect.setAttribute("x", String(x));
@@ -1648,6 +1750,7 @@ class HeatmapRenderer {
         tooltipRect.setAttribute("width", String(cellSize));
         tooltipRect.setAttribute("height", String(cellSize));
         tooltipRect.setAttribute("fill", "transparent");
+        tooltipRect.style.pointerEvents = "none";
         var titleEl = doc.createElementNS(svgNS, "title");
         titleEl.textContent = tooltipParts.join("\n");
         tooltipRect.appendChild(titleEl);
@@ -1665,6 +1768,7 @@ class HeatmapRenderer {
         todayRect.setAttribute("fill", "none");
         todayRect.setAttribute("stroke", "#1f6feb");
         todayRect.setAttribute("stroke-width", "1.2");
+        todayRect.style.pointerEvents = "none";
         svg.appendChild(todayRect);
       }
     }
@@ -1692,8 +1796,16 @@ class HeatmapRenderer {
     return legendDiv;
   }
 
-  _appendOverlayStripes(doc, svg, x, y, cellW, cellH, activeMembers, memberColors) {
+  _appendOverlayStripes(doc, svg, x, y, cellW, cellH, activeMembers, memberColors, memberList, dateStr) {
     if (!activeMembers || activeMembers.length === 0) return;
+
+    var self = this;
+    var memberTooltip = function(activeMember) {
+      var member = memberList && memberList[activeMember.index];
+      if (!member || !dateStr) return null;
+      return dateStr + " | " + member.userName + ": " + self.formatDuration(activeMember.seconds);
+    };
+    var scale = cellW <= 12 ? 1.16 : 1.08;
 
     // Avoid clipPath here. In Zotero's embedded item pane, SVG url(#clip-id)
     // references can fail to resolve from jar/chrome contexts, hiding stripes.
@@ -1707,6 +1819,7 @@ class HeatmapRenderer {
       fullRect.setAttribute("rx", "3");
       fullRect.setAttribute("ry", "3");
       fullRect.setAttribute("fill", memberColors[only.index][only.level]);
+      this._makeHeatmapCellHoverable(doc, fullRect, memberTooltip(only), scale);
       svg.appendChild(fullRect);
       return;
     }
@@ -1724,6 +1837,7 @@ class HeatmapRenderer {
       stripeRect.setAttribute("width", String(innerW));
       stripeRect.setAttribute("height", String(stripeH + 0.5));
       stripeRect.setAttribute("fill", memberColors[am.index][am.level]);
+      this._makeHeatmapCellHoverable(doc, stripeRect, memberTooltip(am), scale);
       svg.appendChild(stripeRect);
     }
   }
@@ -1831,6 +1945,9 @@ class HeatmapRenderer {
       bgRect.setAttribute("rx", "3");
       bgRect.setAttribute("ry", "3");
       bgRect.setAttribute("fill", isFuture ? "#f9f9f9" : "#ebedf0");
+      if (!isFuture) {
+        this._makeHeatmapCellHoverable(doc, bgRect, dateStr + " | 0min");
+      }
       svg.appendChild(bgRect);
 
       if (!isFuture) {
@@ -1846,7 +1963,7 @@ class HeatmapRenderer {
           }
         }
 
-        this._appendOverlayStripes(doc, svg, x, y, cellW, cellH, activeMembers, memberColors);
+        this._appendOverlayStripes(doc, svg, x, y, cellW, cellH, activeMembers, memberColors, memberList, dateStr);
 
         // Tooltip
         var tooltipRect = doc.createElementNS(svgNS, "rect");
@@ -1855,7 +1972,7 @@ class HeatmapRenderer {
         tooltipRect.setAttribute("width", String(cellW));
         tooltipRect.setAttribute("height", String(cellH));
         tooltipRect.setAttribute("fill", "transparent");
-        tooltipRect.style.cursor = "pointer";
+        tooltipRect.style.pointerEvents = "none";
         var titleEl = doc.createElementNS(svgNS, "title");
         titleEl.textContent = tooltipParts.join("\n");
         tooltipRect.appendChild(titleEl);
@@ -1874,6 +1991,7 @@ class HeatmapRenderer {
         todayRect.setAttribute("fill", "none");
         todayRect.setAttribute("stroke", "#1f6feb");
         todayRect.setAttribute("stroke-width", "2");
+        todayRect.style.pointerEvents = "none";
         svg.appendChild(todayRect);
       }
 
@@ -1883,6 +2001,7 @@ class HeatmapRenderer {
       dayText.setAttribute("y", String(y + cellH / 2 + 5));
       dayText.setAttribute("font-size", "12");
       dayText.setAttribute("text-anchor", "middle");
+      dayText.style.pointerEvents = "none";
       var hasHighLevel = false;
       if (!isFuture) {
         for (var mi3 = 0; mi3 < memberList.length; mi3++) {
@@ -1988,6 +2107,9 @@ class HeatmapRenderer {
       bgRect.setAttribute("rx", "3");
       bgRect.setAttribute("ry", "3");
       bgRect.setAttribute("fill", isFuture ? "#f9f9f9" : "#ebedf0");
+      if (!isFuture) {
+        this._makeHeatmapCellHoverable(doc, bgRect, dateStr + " | 0min");
+      }
       svg.appendChild(bgRect);
 
       if (!isFuture) {
@@ -2003,7 +2125,7 @@ class HeatmapRenderer {
           }
         }
 
-        this._appendOverlayStripes(doc, svg, x, yPos, cellW, cellH, activeMembers, memberColors);
+        this._appendOverlayStripes(doc, svg, x, yPos, cellW, cellH, activeMembers, memberColors, memberList, dateStr);
 
         // Tooltip
         var tooltipRect = doc.createElementNS(svgNS, "rect");
@@ -2012,7 +2134,7 @@ class HeatmapRenderer {
         tooltipRect.setAttribute("width", String(cellW));
         tooltipRect.setAttribute("height", String(cellH));
         tooltipRect.setAttribute("fill", "transparent");
-        tooltipRect.style.cursor = "pointer";
+        tooltipRect.style.pointerEvents = "none";
         var titleEl = doc.createElementNS(svgNS, "title");
         titleEl.textContent = tooltipParts.join("\n");
         tooltipRect.appendChild(titleEl);
@@ -2031,6 +2153,7 @@ class HeatmapRenderer {
         todayRect.setAttribute("fill", "none");
         todayRect.setAttribute("stroke", "#1f6feb");
         todayRect.setAttribute("stroke-width", "2");
+        todayRect.style.pointerEvents = "none";
         svg.appendChild(todayRect);
       }
 
@@ -2040,6 +2163,7 @@ class HeatmapRenderer {
       dayText.setAttribute("y", String(yPos + cellH / 2 + 5));
       dayText.setAttribute("font-size", "12");
       dayText.setAttribute("text-anchor", "middle");
+      dayText.style.pointerEvents = "none";
       var hasHighLevel = false;
       if (!isFuture) {
         for (var mi3 = 0; mi3 < memberList.length; mi3++) {
